@@ -1,0 +1,66 @@
+#pragma once
+/*
+ * Tiny "app" framework for the launcher.
+ *
+ * Each app provides a name, an icon (an LV_SYMBOL_* string), a tile colour,
+ * a create() function that builds its UI inside the given parent object,
+ * and an optional destroy() function that cleans up timers etc.
+ * The launcher deletes the app's LVGL objects for you.
+ *
+ * To add a new app:
+ *   1. Write app_myapp.c defining `const app_t my_app = {...};`
+ *   2. Add `extern const app_t my_app;` below
+ *   3. Add `&my_app` to the s_apps[] list in launcher.c
+ */
+#include "lvgl.h"
+
+typedef struct {
+    const char *name;
+    const char *symbol;      /* e.g. LV_SYMBOL_BELL; shown on the tile */
+    uint32_t    color_hex;   /* tile colour, e.g. 0x2E7D32 */
+    void (*create)(lv_obj_t *parent);
+    void (*destroy)(void);
+} app_t;
+
+/* ---- Registered apps ---- */
+extern const app_t world_clock_app;
+
+/* ---- Shared fonts ----
+ * Uses the biggest Montserrat sizes enabled in menuconfig, falling back
+ * to smaller ones (or the default font) so the code always compiles.
+ */
+#if LV_FONT_MONTSERRAT_48
+#define APP_FONT_HUGE (&lv_font_montserrat_48)
+#elif LV_FONT_MONTSERRAT_36
+#define APP_FONT_HUGE (&lv_font_montserrat_36)
+#elif LV_FONT_MONTSERRAT_28
+#define APP_FONT_HUGE (&lv_font_montserrat_28)
+#else
+#define APP_FONT_HUGE LV_FONT_DEFAULT
+#endif
+
+#if LV_FONT_MONTSERRAT_28
+#define APP_FONT_LARGE (&lv_font_montserrat_28)
+#elif LV_FONT_MONTSERRAT_24
+#define APP_FONT_LARGE (&lv_font_montserrat_24)
+#elif LV_FONT_MONTSERRAT_20
+#define APP_FONT_LARGE (&lv_font_montserrat_20)
+#else
+#define APP_FONT_LARGE LV_FONT_DEFAULT
+#endif
+
+#if LV_FONT_MONTSERRAT_20
+#define APP_FONT_MEDIUM (&lv_font_montserrat_20)
+#elif LV_FONT_MONTSERRAT_18
+#define APP_FONT_MEDIUM (&lv_font_montserrat_18)
+#elif LV_FONT_MONTSERRAT_16
+#define APP_FONT_MEDIUM (&lv_font_montserrat_16)
+#else
+#define APP_FONT_MEDIUM LV_FONT_DEFAULT
+#endif
+
+/* Shared colours */
+#define APP_COLOR_BG       0x101418
+#define APP_COLOR_PANEL    0x1E252C
+#define APP_COLOR_TEXT     0xFFFFFF
+#define APP_COLOR_SUBTEXT  0x9AA5B1

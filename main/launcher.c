@@ -1,0 +1,202 @@
+/*
+ * Home screen: a grid of app tiles. Tapping a tile opens the app on its own
+ * screen with a "Home" button in the top bar.
+ *
+ * Everything here runs in the LVGL task (event callbacks and lv_timers),
+ * so no extra locking is needed.
+ */
+#include <stdio.h>
+#include <time.h>
+
+#include "lvgl.h"
+#include "app_framework.h"
+#include "launcher.h"
+#include "net_time.h"
+
+/* ---- App registry: add new apps here ---- */
+static const app_t *s_apps[] = {
+    &world_clock_app,
+};
+#define APP_COUNT (sizeof(s_apps) / sizeof(s_apps[0]))
+
+#define BAR_H 64
+
+static lv_obj_t   *s_home_scr;
+static lv_obj_t   *s_home_clock;
+static lv_obj_t   *s_home_wifi;
+static lv_obj_t   *s_app_scr;
+static const app_t *s_current_app;
+
+/* ---------- helpers ---------- */
+
+static lv_obj_t *make_top_bar(lv_obj_t *scr)
+{
+    lv_obj_t *bar = lv_obj_create(scr);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, LV_PCT(100), BAR_H);
+    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(APP_COLOR_PANEL), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(bar, 16, 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    return bar;
+}
+
+static lv_obj_t *make_screen(void)
+{
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(APP_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    return scr;
+}
+
+/* ---------- app screens ---------- */
+
+static void back_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (s_current_app && s_current_app->destroy) {
+        s_current_app->destroy();
+    }
+    s_current_app = NULL;
+
+    lv_scr_load(s_home_scr);
+    if (s_app_scr) {
+        /* Async: we're inside an event from a child of this screen. */
+        lv_obj_del_async(s_app_scr);
+        s_app_scr = NULL;
+    }
+}
+
+static void launch_app(const app_t *app)
+{
+    lv_obj_t *scr = make_screen();
+
+    lv_obj_t *bar = make_top_bar(scr);
+
+    lv_obj_t *back = lv_btn_create(bar);
+    lv_obj_set_size(back, 130, 44);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(back, 22, 0);
+    lv_obj_add_event_cb(back, back_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  Home");
+    lv_obj_set_style_text_font(back_lbl, APP_FONT_MEDIUM, 0);
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, app->name);
+    lv_obj_set_style_text_font(title, APP_FONT_LARGE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+    /* Area below the bar that belongs to the app. */
+    lv_obj_t *content = lv_obj_create(scr);
+    lv_obj_remove_style_all(content);
+    lv_obj_set_size(content, LV_PCT(100), lv_disp_get_ver_res(NULL) - BAR_H);
+    lv_obj_align(content, LV_ALIGN_TOP_LEFT, 0, BAR_H);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_app_scr = scr;
+    s_current_app = app;
+    app->create(content);
+
+    lv_scr_load(scr);
+}
+
+static void tile_clicked(lv_event_t *e)
+{
+    const app_t *app = (const app_t *)lv_event_get_user_data(e);
+    launch_app(app);
+}
+
+/* ---------- home screen ---------- */
+
+static void home_tick(lv_timer_t *t)
+{
+    (void)t;
+    if (lv_scr_act() != s_home_scr) {
+        return;
+    }
+
+    lv_obj_set_style_text_color(
+        s_home_wifi,
+        lv_color_hex(net_time_wifi_connected() ? 0x4CAF50 : 0x5F6B77), 0);
+
+    if (net_time_is_synced()) {
+        time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+        char buf[24];
+        strftime(buf, sizeof(buf), "%I:%M %p", &tm);
+        lv_label_set_text(s_home_clock, buf[0] == '0' ? buf + 1 : buf);
+    } else {
+        lv_label_set_text(s_home_clock, "--:--");
+    }
+}
+
+static void build_home(void)
+{
+    s_home_scr = make_screen();
+
+    lv_obj_t *bar = make_top_bar(s_home_scr);
+
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, LV_SYMBOL_HOME "  Home");
+    lv_obj_set_style_text_font(title, APP_FONT_LARGE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+
+    s_home_clock = lv_label_create(bar);
+    lv_obj_set_style_text_font(s_home_clock, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(s_home_clock, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_label_set_text(s_home_clock, "--:--");
+    lv_obj_align(s_home_clock, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    s_home_wifi = lv_label_create(bar);
+    lv_label_set_text(s_home_wifi, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_font(s_home_wifi, APP_FONT_MEDIUM, 0);
+    lv_obj_align(s_home_wifi, LV_ALIGN_RIGHT_MID, -130, 0);
+
+    /* Tile grid */
+    lv_obj_t *grid = lv_obj_create(s_home_scr);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_size(grid, LV_PCT(100), lv_disp_get_ver_res(NULL) - BAR_H);
+    lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, BAR_H);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_all(grid, 28, 0);
+    lv_obj_set_style_pad_row(grid, 24, 0);
+    lv_obj_set_style_pad_column(grid, 24, 0);
+
+    for (size_t i = 0; i < APP_COUNT; i++) {
+        const app_t *app = s_apps[i];
+
+        lv_obj_t *tile = lv_btn_create(grid);
+        lv_obj_set_size(tile, 160, 150);
+        lv_obj_set_style_radius(tile, 18, 0);
+        lv_obj_set_style_bg_color(tile, lv_color_hex(app->color_hex), 0);
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(tile, 12, 0);
+        lv_obj_add_event_cb(tile, tile_clicked, LV_EVENT_CLICKED, (void *)app);
+
+        lv_obj_t *icon = lv_label_create(tile);
+        lv_label_set_text(icon, app->symbol);
+        lv_obj_set_style_text_font(icon, APP_FONT_HUGE, 0);
+
+        lv_obj_t *name = lv_label_create(tile);
+        lv_label_set_text(name, app->name);
+        lv_obj_set_style_text_font(name, APP_FONT_MEDIUM, 0);
+    }
+
+    lv_timer_create(home_tick, 500, NULL);
+}
+
+void launcher_start(void)
+{
+    net_time_start();
+    build_home();
+    lv_scr_load(s_home_scr);
+}
