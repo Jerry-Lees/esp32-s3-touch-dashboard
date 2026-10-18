@@ -16,6 +16,7 @@
 /* ---- App registry: add new apps here ---- */
 static const app_t *s_apps[] = {
     &world_clock_app,
+    &weather_app,
 };
 #define APP_COUNT (sizeof(s_apps) / sizeof(s_apps[0]))
 
@@ -182,9 +183,17 @@ static void build_home(void)
         lv_obj_set_style_pad_row(tile, 12, 0);
         lv_obj_add_event_cb(tile, tile_clicked, LV_EVENT_CLICKED, (void *)app);
 
-        lv_obj_t *icon = lv_label_create(tile);
-        lv_label_set_text(icon, app->symbol);
-        lv_obj_set_style_text_font(icon, APP_FONT_HUGE, 0);
+        if (app->draw_icon) {
+            lv_obj_t *holder = lv_obj_create(tile);
+            lv_obj_remove_style_all(holder);
+            lv_obj_set_size(holder, 64, 64);
+            lv_obj_clear_flag(holder, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+            app->draw_icon(holder, 64);
+        } else {
+            lv_obj_t *icon = lv_label_create(tile);
+            lv_label_set_text(icon, app->symbol);
+            lv_obj_set_style_text_font(icon, APP_FONT_HUGE, 0);
+        }
 
         lv_obj_t *name = lv_label_create(tile);
         lv_label_set_text(name, app->name);

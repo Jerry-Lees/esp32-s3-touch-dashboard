@@ -20,10 +20,14 @@ typedef struct {
     uint32_t    color_hex;   /* tile colour, e.g. 0x2E7D32 */
     void (*create)(lv_obj_t *parent);
     void (*destroy)(void);
+    /* Optional: draws a custom tile icon into a size x size box instead of
+     * using `symbol`. */
+    void (*draw_icon)(lv_obj_t *holder, int size);
 } app_t;
 
 /* ---- Registered apps ---- */
 extern const app_t world_clock_app;
+extern const app_t weather_app;
 
 /* ---- Shared fonts ----
  * Uses the biggest Montserrat sizes enabled in menuconfig, falling back
