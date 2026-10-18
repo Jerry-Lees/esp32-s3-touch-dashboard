@@ -47,7 +47,8 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `lvgl_port.c/.h` | Waveshare's LVGL glue and LVGL task. **`lvgl_port.h` line 21: `#define CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_GT911 1`.** It shipped as `0`, which disabled touch; we changed it to 1. |
 | `app_framework.h` | `app_t` struct, shared fonts (`APP_FONT_HUGE/LARGE/MEDIUM`), colors and the `extern` app declarations. |
 | `launcher.c/.h` | Home screen with a tile grid, a top bar with the Central time and a Wi-Fi icon, and app screens with a "< Home" button. **The app registry is `s_apps[]` in `launcher.c`.** |
-| `net_time.c/.h` | Wi-Fi station connection, SNTP (pool.ntp.org), POSIX TZ strings, `LOCAL_TZ` (US Central). Exposes `net_time_wifi_configured/connected()` and `net_time_is_synced()`. |
+| `net_time.c/.h` | Wi-Fi station connection, SNTP (pool.ntp.org), POSIX TZ strings, `LOCAL_TZ` (US Central). Exposes `net_time_wifi_configured/connected()`, `net_time_is_synced()` (true once the time is real, from either the RTC or the internet), `net_time_source()` and `net_time_last_sync()`. At boot it restores the time from the RTC; every SNTP sync (`sync_cb`) writes the time back to the RTC. |
+| `rtc.c/.h` | PCF85063 RTC (I2C 0x51, legacy driver, port 0). Stores **UTC**; `rtc_read_utc()` rejects the time if the chip's oscillator-stop flag is set or the date is implausible. |
 | `settings.c/.h` | NVS-backed user settings (12/24h, screen timeout, default weather city). |
 | `app_settings.c` | Settings app (tabs: Network, Display, Time, Weather, About). |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
@@ -80,6 +81,7 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - Fonts enabled in menuconfig: Montserrat 14 (default), 20, 28 and 48.
 - `sdkconfig` settings that matter: flash size **16MB**, **custom partition table `partitions.csv`**: nvs 24K @0x9000 and phy_init 4K @0xF000 (same as the old built-in table), **factory app 6M @0x10000**, **`storage` FAT ~9.9M @0x610000** (not mounted yet; meant for icons, cover art, fonts and config). The app is about 1.4 MB. Don't move or resize nvs, or saved Settings are lost. **Don't run `idf.py set-target`**: it resets sdkconfig. Edit sdkconfig choices carefully: for a Kconfig choice, unset the old option and set the new one.
 - `nvs_flash_init()` currently runs inside `net_time_start()` **only if Wi-Fi is configured**. Anything that uses NVS should initialize it early and unconditionally; it's safe to call twice.
+- **The RTC has no backup battery** (the user's board has none fitted; the user may add one later). The time survives RESET, reflashing and crashes, but not unplugging. After a power loss the RTC is ignored until Wi-Fi syncs.
 - Harmless build and boot warnings, which you can ignore: "esp_blockdev does not contain a CMakeLists.txt", "Could not use git describe" (disappears once commits exist), and the legacy I2C driver warning.
 
 ## Settings (done)
@@ -98,4 +100,4 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 
 ## Ideas list (for later)
 
-Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485, SD card photo frame, and syncing the PCF85063 RTC from SNTP so the time survives without Wi-Fi.
+Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485, SD card photo frame, and a backup battery for the RTC (RTC sync is done).

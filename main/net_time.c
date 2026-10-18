@@ -6,6 +6,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "esp_err.h"
@@ -17,6 +18,7 @@
 #include "nvs_flash.h"
 
 #include "net_time.h"
+#include "rtc.h"
 #include "wifi_secrets.h"
 
 static const char *TAG = "net_time";
@@ -24,6 +26,35 @@ static const char *TAG = "net_time";
 static volatile bool s_configured;
 static volatile bool s_connected;
 static bool s_started;
+static volatile time_source_t s_source = TIME_SRC_NONE;
+static volatile uint32_t s_last_sync;   /* fits until 2106; avoids torn 64-bit reads */
+
+/* Runs in the SNTP (lwIP) task after each successful sync. */
+static void sntp_synced(struct timeval *tv)
+{
+    s_last_sync = (uint32_t)tv->tv_sec;
+    s_source = TIME_SRC_INTERNET;
+    if (rtc_write_utc(tv->tv_sec)) {
+        ESP_LOGI(TAG, "Internet time synced and saved to the RTC chip");
+    }
+}
+
+static void restore_from_rtc(void)
+{
+    time_t t;
+    if (!rtc_read_utc(&t)) {
+        return;
+    }
+    struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    s_source = TIME_SRC_RTC;
+
+    struct tm tm;
+    char buf[32];
+    localtime_r(&t, &tm);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S %Z", &tm);
+    ESP_LOGI(TAG, "Time restored from the RTC chip: %s", buf);
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
@@ -51,6 +82,9 @@ void net_time_start(void)
     /* Local time zone for anything that calls localtime(). */
     setenv("TZ", LOCAL_TZ, 1);
     tzset();
+
+    /* Show the right time right away, even without Wi-Fi. */
+    restore_from_rtc();
 
     if (strlen(WIFI_SSID) == 0 || strcmp(WIFI_SSID, "your-network-name") == 0) {
         ESP_LOGW(TAG, "Wi-Fi not configured: edit main/wifi_secrets.h");
@@ -97,6 +131,7 @@ void net_time_start(void)
     /* SNTP keeps retrying in the background until the network is up,
      * then re-syncs periodically (default: every hour). */
     esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp_cfg.sync_cb = sntp_synced;
     ESP_ERROR_CHECK(esp_netif_sntp_init(&sntp_cfg));
 
     ESP_LOGI(TAG, "Connecting to Wi-Fi \"%s\"...", WIFI_SSID);
@@ -104,9 +139,12 @@ void net_time_start(void)
 
 bool net_time_wifi_configured(void) { return s_configured; }
 bool net_time_wifi_connected(void)  { return s_connected; }
+time_source_t net_time_source(void)  { return s_source; }
+time_t net_time_last_sync(void)      { return (time_t)s_last_sync; }
 
 bool net_time_is_synced(void)
 {
-    /* Before sync the clock starts at 1970; anything after 2025 is real. */
+    /* Before RTC restore or sync the clock starts at 1970; anything after
+     * 2025 is real. */
     return time(NULL) > 1735689600; /* 2025-01-01 00:00:00 UTC */
 }

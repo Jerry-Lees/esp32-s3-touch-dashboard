@@ -44,7 +44,7 @@ static lv_timer_t *s_timer;
 
 static struct {
     lv_obj_t *net_status, *net_ssid, *net_signal, *net_ip;
-    lv_obj_t *time_preview;
+    lv_obj_t *time_preview, *time_source;
     lv_obj_t *about_heap, *about_psram, *about_uptime;
 } ui;
 
@@ -203,6 +203,33 @@ static void update_time_preview(void)
     lv_label_set_text(ui.time_preview, buf);
 }
 
+static void update_time_source(void)
+{
+    char t[16], buf[48];
+    time_t last = net_time_last_sync();
+
+    switch (net_time_source()) {
+    case TIME_SRC_INTERNET: {
+        struct tm tm;
+        localtime_r(&last, &tm);
+        if (settings_get_24h()) {
+            strftime(t, sizeof(t), "%H:%M", &tm);
+        } else {
+            strftime(t, sizeof(t), "%I:%M %p", &tm);
+        }
+        snprintf(buf, sizeof(buf), "Internet (synced %s)", t[0] == '0' ? t + 1 : t);
+        lv_label_set_text(ui.time_source, buf);
+        break;
+    }
+    case TIME_SRC_RTC:
+        lv_label_set_text(ui.time_source, "Clock chip (until internet sync)");
+        break;
+    default:
+        lv_label_set_text(ui.time_source, "Not set yet");
+        break;
+    }
+}
+
 static void update_about(void)
 {
     char buf[48];
@@ -231,6 +258,7 @@ static void tick(lv_timer_t *t)
     (void)t;
     update_network();
     update_time_preview();
+    update_time_source();
     update_about();
 }
 
@@ -307,9 +335,14 @@ static void build_time_tab(lv_obj_t *tab)
     mk_choices(p, s_clock_map, settings_get_24h() ? 1 : 0, 70, clock_changed);
     ui.time_preview = mk_label(p, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT, "");
 
+    lv_obj_t *src = mk_panel(tab);
+    ui.time_source = mk_row(src, "Time source");
+
     lv_obj_t *note = mk_label(tab, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT,
                               "Used by the home screen clock and World Clock. "
-                              "The UTC card always shows 24-hour time.");
+                              "The UTC card always shows 24-hour time. Each "
+                              "internet sync is saved to the clock chip, so the "
+                              "time is right at power-on even without Wi-Fi.");
     lv_obj_set_width(note, LV_PCT(100));
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 }
