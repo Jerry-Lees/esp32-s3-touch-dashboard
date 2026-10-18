@@ -78,7 +78,7 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - Non-clickable decoration objects inside buttons must have `LV_OBJ_FLAG_CLICKABLE` cleared, or they swallow taps.
 - Built-in Montserrat fonts include ASCII, the degree sign (`"\xC2\xB0"`), the bullet and the `LV_SYMBOL_*` icons, but **no other non-ASCII characters**.
 - Fonts enabled in menuconfig: Montserrat 14 (default), 20, 28 and 48.
-- `sdkconfig` settings that matter: flash size **16MB**, partition table **Single factory app (large), no OTA** (1500K app partition). The app is about 1.2 MB with Wi-Fi, TLS and fonts. If it outgrows 1500K, switch to a custom `partitions.csv` with a larger factory partition, since there's 16 MB of flash. **Don't run `idf.py set-target`**: it resets sdkconfig. Edit sdkconfig choices carefully: for a Kconfig choice, unset the old option and set the new one.
+- `sdkconfig` settings that matter: flash size **16MB**, **custom partition table `partitions.csv`**: nvs 24K @0x9000 and phy_init 4K @0xF000 (same as the old built-in table), **factory app 6M @0x10000**, **`storage` FAT ~9.9M @0x610000** (not mounted yet; meant for icons, cover art, fonts and config). The app is about 1.4 MB. Don't move or resize nvs, or saved Settings are lost. **Don't run `idf.py set-target`**: it resets sdkconfig. Edit sdkconfig choices carefully: for a Kconfig choice, unset the old option and set the new one.
 - `nvs_flash_init()` currently runs inside `net_time_start()` **only if Wi-Fi is configured**. Anything that uses NVS should initialize it early and unconditionally; it's safe to call twice.
 - Harmless build and boot warnings, which you can ignore: "esp_blockdev does not contain a CMakeLists.txt", "Could not use git describe" (disappears once commits exist), and the legacy I2C driver warning.
 
@@ -88,7 +88,6 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - `app_settings.c`: tabview with Network, Display, Time, Weather and About tabs. It styles widgets dark by hand because the LVGL theme is light.
 - `app_t.pin_last = true` keeps a tile last: `build_home()` draws non-pinned apps first, then pinned ones.
 - The screen timeout lives in `launcher.c` (`screen_timeout_tick`). It turns the backlight off and puts a full-screen catcher on `lv_layer_top()` that swallows the waking tap.
-- The app binary is about 1.39 MB of 1500K (5% free). The next sizable app probably needs a custom `partitions.csv`.
 
 ## Workflow
 
