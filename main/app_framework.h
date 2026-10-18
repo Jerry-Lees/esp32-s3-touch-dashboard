@@ -11,6 +11,10 @@
  *   1. Write app_myapp.c defining `const app_t my_app = {...};`
  *   2. Add `extern const app_t my_app;` below
  *   3. Add `&my_app` to the s_apps[] list in launcher.c
+ *   4. Add app_myapp.c to SRCS in main/CMakeLists.txt
+ *
+ * Apps with pin_last = true (Settings) are always drawn after all the
+ * others, wherever they sit in s_apps[].
  */
 #include "lvgl.h"
 
@@ -23,11 +27,18 @@ typedef struct {
     /* Optional: draws a custom tile icon into a size x size box instead of
      * using `symbol`. */
     void (*draw_icon)(lv_obj_t *holder, int size);
+    /* true = always show this tile at the end of the home screen. */
+    bool pin_last;
 } app_t;
 
 /* ---- Registered apps ---- */
 extern const app_t world_clock_app;
 extern const app_t weather_app;
+extern const app_t settings_app;
+
+/* Weather locations, so Settings can offer a default-city choice. */
+int         weather_location_count(void);
+const char *weather_location_name(int index);
 
 /* ---- Shared fonts ----
  * Uses the biggest Montserrat sizes enabled in menuconfig, falling back

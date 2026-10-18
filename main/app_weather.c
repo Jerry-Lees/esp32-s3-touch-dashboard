@@ -24,11 +24,12 @@
 #include "lvgl.h"
 #include "app_framework.h"
 #include "net_time.h"
+#include "settings.h"
 
 static const char *TAG = "weather";
 
 /* ---------------------------------------------------------------------------
- * Locations (first entry is the default)
+ * Locations (the default is picked in Settings; first entry if unset)
  * ------------------------------------------------------------------------- */
 typedef struct {
     const char *name;
@@ -80,7 +81,7 @@ typedef struct {
 static wx_data_t s_cache[LOC_COUNT];
 static bool      s_error[LOC_COUNT];
 static int64_t   s_last_attempt_us[LOC_COUNT];
-static int       s_sel = 0;    /* remembered while the device stays on */
+static int       s_sel = 0;    /* set to the Settings default on each open */
 
 enum { FETCH_IDLE, FETCH_BUSY, FETCH_DONE };
 static int       s_fetch_state = FETCH_IDLE;
@@ -711,9 +712,21 @@ static void refresh_clicked(lv_event_t *e)
     update_status();
 }
 
+int weather_location_count(void) { return LOC_COUNT; }
+
+const char *weather_location_name(int index)
+{
+    return (index >= 0 && index < LOC_COUNT) ? s_locs[index].name : "";
+}
+
 static void weather_create(lv_obj_t *parent)
 {
     memset(&ui, 0, sizeof(ui));
+
+    s_sel = settings_get_weather_city();
+    if (s_sel < 0 || s_sel >= LOC_COUNT) {
+        s_sel = 0;
+    }
 
     /* ---- Top row: location picker, last update, refresh ---- */
     char opts[256] = "";

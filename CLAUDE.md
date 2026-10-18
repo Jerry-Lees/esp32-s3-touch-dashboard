@@ -48,8 +48,10 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `app_framework.h` | `app_t` struct, shared fonts (`APP_FONT_HUGE/LARGE/MEDIUM`), colors and the `extern` app declarations. |
 | `launcher.c/.h` | Home screen with a tile grid, a top bar with the Central time and a Wi-Fi icon, and app screens with a "< Home" button. **The app registry is `s_apps[]` in `launcher.c`.** |
 | `net_time.c/.h` | Wi-Fi station connection, SNTP (pool.ntp.org), POSIX TZ strings, `LOCAL_TZ` (US Central). Exposes `net_time_wifi_configured/connected()` and `net_time_is_synced()`. |
+| `settings.c/.h` | NVS-backed user settings (12/24h, screen timeout, default weather city). |
+| `app_settings.c` | Settings app (tabs: Network, Display, Time, Weather, About). |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
-| `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. `CLOCK_24H` is a compile-time `#define` (0 = 12-hour). |
+| `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. 12/24-hour comes from `settings_get_24h()`. |
 | `app_weather.c` | Weather: Open-Meteo over HTTPS (`esp_http_client` + `esp_crt_bundle`), downloads in a FreeRTOS task, cJSON parsing, icons drawn from LVGL shapes, 6 locations with Lee's Summit MO as the default (`s_locs[]`), 15-minute refresh. |
 | `CMakeLists.txt` | **Lists every source file explicitly in `SRCS`.** Add each new `.c` file here. No `REQUIRES`, so all IDF components are available to `main`. |
 
@@ -63,6 +65,7 @@ typedef struct {
     void (*create)(lv_obj_t *parent);   // build UI inside parent (800 x 416 area below the 64px bar)
     void (*destroy)(void);              // delete timers / reset state; launcher deletes the objects
     void (*draw_icon)(lv_obj_t *holder, int size); // optional custom tile icon
+    bool pin_last;                       // true = always the last tile (Settings)
 } app_t;
 ```
 
@@ -79,23 +82,13 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - `nvs_flash_init()` currently runs inside `net_time_start()` **only if Wi-Fi is configured**. Anything that uses NVS should initialize it early and unconditionally; it's safe to call twice.
 - Harmless build and boot warnings, which you can ignore: "esp_blockdev does not contain a CMakeLists.txt", "Could not use git describe" (disappears once commits exist), and the legacy I2C driver warning.
 
-## Next task: Settings app
+## Settings (done)
 
-Build `main/app_settings.c` as a "Settings" app (gear icon `LV_SYMBOL_SETTINGS`, gray tile).
-
-### Settings must always be the last tile
-
-Change the launcher so Settings is always shown last, regardless of where it appears in `s_apps[]` or how many apps are added later. For example, add a `bool pin_last` field to `app_t` and have the launcher draw pinned apps after all the others. Keep it simple and explain the approach.
-
-### Suggested contents (confirm with the user before building)
-
-1. **Wi-Fi / network:** SSID, connection status, signal strength (RSSI via `esp_wifi_sta_get_ap_info`), IP address. Read-only is fine at first.
-2. **Display:** the backlight is on/off only through CH422G EXIO2, with no dimming hardware. Offer a **screen timeout** (Off / 1 / 5 / 15 min) that turns the backlight off after inactivity and wakes on touch, instead of a brightness slider. Check `waveshare_rgb_lcd_port.c` for the existing `wavesahre_rgb_lcd_bl_on()` / `_off()` helpers (note Waveshare's typo) and use LVGL's inactivity time (`lv_disp_get_inactive_time`).
-3. **Time format:** a 12/24-hour toggle. Turn `CLOCK_24H` in `app_world_clock.c` into a runtime setting and also apply it to the launcher's top-bar clock.
-4. **Weather:** choose the default city, which `app_weather.c` should read at startup instead of hard-coding index 0 (Lee's Summit stays the factory default).
-5. **About:** ESP-IDF version (`esp_get_idf_version()`), LVGL version, free internal and PSRAM heap, uptime, chip revision, MAC.
-
-Persist settings in **NVS**, for example in a small `settings.c/.h` module with getters and setters that other apps call. Initialize NVS early. Use a scrollable list or tabs, since the content area is 800×416.
+- `settings.c/.h`: NVS-backed settings (namespace "settings", one u8 key each): `settings_get/set_24h`, `_screen_timeout_min`, `_weather_city`. `settings_init()` runs first in `launcher_start()` and initializes NVS unconditionally.
+- `app_settings.c`: tabview with Network, Display, Time, Weather and About tabs. It styles widgets dark by hand because the LVGL theme is light.
+- `app_t.pin_last = true` keeps a tile last: `build_home()` draws non-pinned apps first, then pinned ones.
+- The screen timeout lives in `launcher.c` (`screen_timeout_tick`). It turns the backlight off and puts a full-screen catcher on `lv_layer_top()` that swallows the waking tap.
+- The app binary is about 1.39 MB of 1500K (5% free). The next sizable app probably needs a custom `partitions.csv`.
 
 ## Workflow
 

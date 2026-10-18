@@ -12,11 +12,20 @@
 #include "app_framework.h"
 #include "launcher.h"
 #include "net_time.h"
+#include "settings.h"
+#include "esp_err.h"
 
-/* ---- App registry: add new apps here ---- */
+/* Backlight helpers from waveshare_rgb_lcd_port.c (declared here because that
+ * header defines a static TAG that would warn as unused). */
+esp_err_t wavesahre_rgb_lcd_bl_on(void);
+esp_err_t wavesahre_rgb_lcd_bl_off(void);
+
+/* ---- App registry: add new apps here ----
+ * Order = tile order, except apps with pin_last (Settings) always go last. */
 static const app_t *s_apps[] = {
     &world_clock_app,
     &weather_app,
+    &settings_app,
 };
 #define APP_COUNT (sizeof(s_apps) / sizeof(s_apps[0]))
 
@@ -27,6 +36,7 @@ static lv_obj_t   *s_home_clock;
 static lv_obj_t   *s_home_wifi;
 static lv_obj_t   *s_app_scr;
 static const app_t *s_current_app;
+static lv_obj_t   *s_wake_catcher;  /* non-NULL while the screen is asleep */
 
 /* ---------- helpers ---------- */
 
@@ -130,11 +140,45 @@ static void home_tick(lv_timer_t *t)
         struct tm tm;
         localtime_r(&now, &tm);
         char buf[24];
-        strftime(buf, sizeof(buf), "%I:%M %p", &tm);
-        lv_label_set_text(s_home_clock, buf[0] == '0' ? buf + 1 : buf);
+        if (settings_get_24h()) {
+            strftime(buf, sizeof(buf), "%H:%M", &tm);
+            lv_label_set_text(s_home_clock, buf);
+        } else {
+            strftime(buf, sizeof(buf), "%I:%M %p", &tm);
+            lv_label_set_text(s_home_clock, buf[0] == '0' ? buf + 1 : buf);
+        }
     } else {
         lv_label_set_text(s_home_clock, "--:--");
     }
+}
+
+static void make_tile(lv_obj_t *grid, const app_t *app)
+{
+    lv_obj_t *tile = lv_btn_create(grid);
+    lv_obj_set_size(tile, 160, 150);
+    lv_obj_set_style_radius(tile, 18, 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(app->color_hex), 0);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(tile, 12, 0);
+    lv_obj_add_event_cb(tile, tile_clicked, LV_EVENT_CLICKED, (void *)app);
+
+    if (app->draw_icon) {
+        lv_obj_t *holder = lv_obj_create(tile);
+        lv_obj_remove_style_all(holder);
+        lv_obj_set_size(holder, 64, 64);
+        lv_obj_clear_flag(holder, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        app->draw_icon(holder, 64);
+    } else {
+        lv_obj_t *icon = lv_label_create(tile);
+        lv_label_set_text(icon, app->symbol);
+        lv_obj_set_style_text_font(icon, APP_FONT_HUGE, 0);
+    }
+
+    lv_obj_t *name = lv_label_create(tile);
+    lv_label_set_text(name, app->name);
+    lv_obj_set_style_text_font(name, APP_FONT_MEDIUM, 0);
 }
 
 static void build_home(void)
@@ -170,42 +214,60 @@ static void build_home(void)
     lv_obj_set_style_pad_row(grid, 24, 0);
     lv_obj_set_style_pad_column(grid, 24, 0);
 
-    for (size_t i = 0; i < APP_COUNT; i++) {
-        const app_t *app = s_apps[i];
-
-        lv_obj_t *tile = lv_btn_create(grid);
-        lv_obj_set_size(tile, 160, 150);
-        lv_obj_set_style_radius(tile, 18, 0);
-        lv_obj_set_style_bg_color(tile, lv_color_hex(app->color_hex), 0);
-        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(tile, 12, 0);
-        lv_obj_add_event_cb(tile, tile_clicked, LV_EVENT_CLICKED, (void *)app);
-
-        if (app->draw_icon) {
-            lv_obj_t *holder = lv_obj_create(tile);
-            lv_obj_remove_style_all(holder);
-            lv_obj_set_size(holder, 64, 64);
-            lv_obj_clear_flag(holder, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-            app->draw_icon(holder, 64);
-        } else {
-            lv_obj_t *icon = lv_label_create(tile);
-            lv_label_set_text(icon, app->symbol);
-            lv_obj_set_style_text_font(icon, APP_FONT_HUGE, 0);
+    /* Two passes: normal apps first, then pinned-last apps (Settings). */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < APP_COUNT; i++) {
+            if (s_apps[i]->pin_last == (pass == 1)) {
+                make_tile(grid, s_apps[i]);
+            }
         }
-
-        lv_obj_t *name = lv_label_create(tile);
-        lv_label_set_text(name, app->name);
-        lv_obj_set_style_text_font(name, APP_FONT_MEDIUM, 0);
     }
 
     lv_timer_create(home_tick, 500, NULL);
 }
 
+/* ---------- screen timeout ----------
+ * The backlight is on/off only (CH422G EXIO2), so "sleep" = backlight off.
+ * While asleep, an invisible full-screen object on the top layer catches
+ * the waking tap so it doesn't also press whatever is underneath.
+ */
+
+static void screen_wake(lv_event_t *e)
+{
+    (void)e;
+    if (!s_wake_catcher) {
+        return;
+    }
+    wavesahre_rgb_lcd_bl_on();
+    /* Async: we're inside this object's own event. */
+    lv_obj_del_async(s_wake_catcher);
+    s_wake_catcher = NULL;
+}
+
+static void screen_timeout_tick(lv_timer_t *t)
+{
+    (void)t;
+    int minutes = settings_get_screen_timeout_min();
+    if (s_wake_catcher || minutes == 0) {
+        return;
+    }
+    if (lv_disp_get_inactive_time(NULL) < (uint32_t)minutes * 60000U) {
+        return;
+    }
+
+    s_wake_catcher = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_wake_catcher);
+    lv_obj_set_size(s_wake_catcher, LV_PCT(100), LV_PCT(100));
+    lv_obj_add_flag(s_wake_catcher, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_wake_catcher, screen_wake, LV_EVENT_PRESSED, NULL);
+    wavesahre_rgb_lcd_bl_off();
+}
+
 void launcher_start(void)
 {
+    settings_init();   /* also initializes NVS, before Wi-Fi needs it */
     net_time_start();
     build_home();
     lv_scr_load(s_home_scr);
+    lv_timer_create(screen_timeout_tick, 1000, NULL);
 }

@@ -10,9 +10,9 @@
 #include "lvgl.h"
 #include "app_framework.h"
 #include "net_time.h"
+#include "settings.h"
 
-/* Set to 1 for 24-hour time in every zone. UTC always uses 24-hour. */
-#define CLOCK_24H 0
+/* 12/24-hour comes from Settings. UTC always uses 24-hour. */
 
 typedef struct {
     const char *name;
@@ -105,7 +105,7 @@ static void update_clocks(lv_timer_t *t)
         localtime_r(&now, &tm);
 
         char buf[48];
-        bool use_24h = CLOCK_24H || z->force_24h;
+        bool use_24h = settings_get_24h() || z->force_24h;
 
         if (use_24h) {
             strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
