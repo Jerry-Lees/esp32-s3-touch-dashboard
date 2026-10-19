@@ -16,6 +16,9 @@ static bool s_24h;
 static int  s_timeout_min;
 static int  s_weather_city;
 static bool s_show_fps;
+static bool s_ticker;
+static bool s_ticker_wx = true, s_ticker_stocks = true;
+static int  s_ticker_cities = 0xFF;   /* 0xFF = not set yet: use the default city */
 
 static uint8_t load_u8(nvs_handle_t h, const char *key, uint8_t def)
 {
@@ -56,6 +59,10 @@ void settings_init(void)
         s_timeout_min  = load_u8(h, "scr_tmo", 0);
         s_weather_city = load_u8(h, "wx_city", 0);
         s_show_fps     = load_u8(h, "show_fps", 0) != 0;
+        s_ticker       = load_u8(h, "ticker", 0) != 0;
+        s_ticker_wx    = load_u8(h, "tk_wx", 1) != 0;
+        s_ticker_cities = load_u8(h, "tk_wxcity", 0xFF);
+        s_ticker_stocks = load_u8(h, "tk_stk", 1) != 0;
         nvs_close(h);
     }
     /* nvs_open fails on first boot (namespace not created yet): keep defaults. */
@@ -71,6 +78,50 @@ void settings_set_24h(bool on)
     if (on != s_24h) {
         s_24h = on;
         save_u8("clock24", on);
+    }
+}
+
+bool settings_get_ticker(void) { return s_ticker; }
+
+void settings_set_ticker(bool on)
+{
+    if (on != s_ticker) {
+        s_ticker = on;
+        save_u8("ticker", on);
+    }
+}
+
+bool settings_get_ticker_weather(void) { return s_ticker_wx; }
+
+void settings_set_ticker_weather(bool on)
+{
+    if (on != s_ticker_wx) {
+        s_ticker_wx = on;
+        save_u8("tk_wx", on);
+    }
+}
+
+uint32_t settings_get_ticker_cities(void)
+{
+    return s_ticker_cities == 0xFF ? 1u << s_weather_city : (uint32_t)s_ticker_cities;
+}
+
+void settings_set_ticker_cities(uint32_t mask)
+{
+    mask &= 0x7F;   /* 0xFF is reserved for "not set" */
+    if ((int)mask != s_ticker_cities) {
+        s_ticker_cities = (int)mask;
+        save_u8("tk_wxcity", (uint8_t)mask);
+    }
+}
+
+bool settings_get_ticker_stocks(void) { return s_ticker_stocks; }
+
+void settings_set_ticker_stocks(bool on)
+{
+    if (on != s_ticker_stocks) {
+        s_ticker_stocks = on;
+        save_u8("tk_stk", on);
     }
 }
 

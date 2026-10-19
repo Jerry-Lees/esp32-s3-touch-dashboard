@@ -53,6 +53,17 @@ extern const app_t settings_app;
 int         weather_location_count(void);
 const char *weather_location_name(int index);
 
+/* ---- Info ticker sources (see ticker.c) ----
+ * *_ticker_items fill up to `max` items of text (LVGL recolor markup,
+ * "#RRGGBB text#") and return how many. *_background_tick keep the data
+ * fresh while the app is closed; the ticker calls them about once a second
+ * (LVGL task). */
+#define TICKER_ITEM_LEN 320
+int  weather_ticker_items(char (*out)[TICKER_ITEM_LEN], int max);
+void weather_background_tick(void);
+int  stonks_ticker_items(char (*out)[TICKER_ITEM_LEN], int max);
+void stonks_background_tick(void);
+
 /* ---- Shared fonts ----
  * Uses the biggest Montserrat sizes enabled in menuconfig, falling back
  * to smaller ones (or the default font) so the code always compiles.

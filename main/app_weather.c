@@ -660,41 +660,102 @@ static void update_status(void)
     lv_label_set_text(ui.updated, "");
 }
 
-static void maybe_fetch(bool force)
+/* Starts a download of `loc` if its data is old (or `force`). Returns true
+ * if one was started. Only one download runs at a time. */
+static bool maybe_fetch_loc(int loc, bool force)
 {
     if (!net_time_wifi_connected() || !net_time_is_synced()) {
-        return;
+        return false;
     }
-    const wx_data_t *d = &s_cache[s_sel];
+    const wx_data_t *d = &s_cache[loc];
     int64_t now = esp_timer_get_time();
     bool stale = !d->valid || (now - d->fetched_us) > (int64_t)REFRESH_SEC * 1000000;
-    bool may_retry = s_last_attempt_us[s_sel] == 0 ||
-                     (now - s_last_attempt_us[s_sel]) > (int64_t)RETRY_MS * 1000;
-    if (force || (stale && may_retry)) {
-        start_fetch(s_sel);
+    bool may_retry = s_last_attempt_us[loc] == 0 ||
+                     (now - s_last_attempt_us[loc]) > (int64_t)RETRY_MS * 1000;
+    if ((force || (stale && may_retry)) &&
+        __atomic_load_n(&s_fetch_state, __ATOMIC_ACQUIRE) == FETCH_IDLE) {
+        start_fetch(loc);
+        return true;
+    }
+    return false;
+}
+
+static void maybe_fetch(bool force)
+{
+    maybe_fetch_loc(s_sel, force);
+}
+
+/* Takes a finished download into the cache (LVGL task: app timer or the
+ * ticker's background service). */
+static void collect_fetch(void)
+{
+    if (__atomic_load_n(&s_fetch_state, __ATOMIC_ACQUIRE) != FETCH_DONE) {
+        return;
+    }
+    int loc = s_fetch_loc;
+    if (s_fetch_ok) {
+        s_cache[loc] = s_fetch_result;
+        s_cache[loc].fetched_us = esp_timer_get_time();
+        s_cache[loc].fetched_wall = net_time_is_synced() ? time(NULL) : 0;
+        s_error[loc] = false;
+    } else {
+        s_error[loc] = true;
+    }
+    __atomic_store_n(&s_fetch_state, FETCH_IDLE, __ATOMIC_RELEASE);
+    if (loc == s_sel) {
+        render();
     }
 }
 
 static void tick(lv_timer_t *t)
 {
     (void)t;
-    if (__atomic_load_n(&s_fetch_state, __ATOMIC_ACQUIRE) == FETCH_DONE) {
-        int loc = s_fetch_loc;
-        if (s_fetch_ok) {
-            s_cache[loc] = s_fetch_result;
-            s_cache[loc].fetched_us = esp_timer_get_time();
-            s_cache[loc].fetched_wall = net_time_is_synced() ? time(NULL) : 0;
-            s_error[loc] = false;
-        } else {
-            s_error[loc] = true;
-        }
-        __atomic_store_n(&s_fetch_state, FETCH_IDLE, __ATOMIC_RELEASE);
-        if (loc == s_sel) {
-            render();
-        }
-    }
+    collect_fetch();
     maybe_fetch(false);
     update_status();
+}
+
+/* ---------------------------------------------------------------------------
+ * Info ticker (home screen): background refresh + text
+ * ------------------------------------------------------------------------- */
+void weather_background_tick(void)
+{
+    collect_fetch();
+    uint32_t mask = settings_get_ticker_cities();
+    for (int i = 0; i < LOC_COUNT; i++) {
+        if ((mask & (1u << i)) && maybe_fetch_loc(i, false)) {
+            break;
+        }
+    }
+}
+
+int weather_ticker_items(char (*out)[TICKER_ITEM_LEN], int max)
+{
+    uint32_t mask = settings_get_ticker_cities();
+    int n = 0;
+    for (int i = 0; i < LOC_COUNT && n < max; i++) {
+        if (!(mask & (1u << i))) continue;
+        const wx_data_t *d = &s_cache[i];
+        char *o = out[n++];
+        size_t len = TICKER_ITEM_LEN;
+        if (!d->valid) {
+            snprintf(o, len, "#4FC3F7 %s#  loading...", s_locs[i].name);
+            continue;
+        }
+        int k = snprintf(o, len, "#4FC3F7 %s#  #FFFFFF %d" DEG "F# %s",
+                         s_locs[i].name, rnd(d->temp), wx_text(d->code, d->is_day));
+        /* Today and tomorrow only; the app has the rest of the week. */
+        for (int j = 0; j < d->n_days && j < 2 && k > 0 && k < (int)len; j++) {
+            k += snprintf(o + k, len - k, "   #B0BEC5 %s# %d" DEG "/%d" DEG " %s",
+                          j == 0 ? "Today" : "Tomorrow",
+                          rnd(d->daily[j].hi), rnd(d->daily[j].lo),
+                          wx_text(d->daily[j].code, true));
+            if (k < (int)len && d->daily[j].pop >= 30) {
+                k += snprintf(o + k, len - k, " (rain %d%%)", d->daily[j].pop);
+            }
+        }
+    }
+    return n;
 }
 
 static void location_changed(lv_event_t *e)

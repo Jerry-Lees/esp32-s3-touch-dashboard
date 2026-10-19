@@ -24,6 +24,19 @@ void settings_set_screen_timeout_min(int minutes);
 bool settings_get_show_fps(void);
 void settings_set_show_fps(bool on);
 
+/* Info ticker along the bottom of the home screen; default off. */
+bool settings_get_ticker(void);
+void settings_set_ticker(bool on);
+/* What the ticker shows: weather (default on) for the cities in a bit mask
+ * (bit i = Weather location i; default = the default weather city), and
+ * the St0nks watchlist (default on). */
+bool settings_get_ticker_weather(void);
+void settings_set_ticker_weather(bool on);
+uint32_t settings_get_ticker_cities(void);
+void settings_set_ticker_cities(uint32_t mask);
+bool settings_get_ticker_stocks(void);
+void settings_set_ticker_stocks(bool on);
+
 /* Index into the Weather app's location list; 0 = Lee's Summit (default). */
 int  settings_get_weather_city(void);
 void settings_set_weather_city(int index);

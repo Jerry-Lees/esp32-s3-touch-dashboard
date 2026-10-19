@@ -1346,9 +1346,9 @@ static void handle_result(quote_t *q)
     }
 }
 
-static void tick(lv_timer_t *t)
+/* Takes in finished downloads and starts the next refresh when due. */
+static void service(void)
 {
-    (void)t;
     quote_t *q;
     while (s_results && xQueueReceive(s_results, &q, 0) == pdTRUE) {
         handle_result(q);
@@ -1364,11 +1364,43 @@ static void tick(lv_timer_t *t)
         esp_timer_get_time() - D.last_refresh_us > every * 1000000LL) {
         refresh_all();
     }
+}
 
+static void tick(lv_timer_t *t)
+{
+    (void)t;
+    service();
     update_status();
     if (U.detail_view && D.detail_range != R_1D && !detail_quote()) {
         lv_obj_invalidate(U.d_chart);        /* "Loading..." / "No data yet" */
     }
+}
+
+/* ---------- info ticker ---------- */
+
+void stonks_background_tick(void)
+{
+    if (!D.loaded) load_list();
+    worker_init();
+    service();
+}
+
+int stonks_ticker_items(char (*out)[TICKER_ITEM_LEN], int max)
+{
+    int n = 0;
+    for (int i = 0; i < D.n && n < max; i++) {
+        const quote_t *q = D.ent[i].q;
+        if (!q || !q->ok) continue;
+        char price[40];
+        fmt_money(price, sizeof(price), q->price, q->currency);
+        double d = q->price - q->prev_close;
+        uint32_t c = change_color(q->price, q->prev_close);
+        snprintf(out[n++], TICKER_ITEM_LEN, "#FFD54F %s#  %s  #%06" PRIX32 " %s %+.2f%%#",
+                 q->sym, price, c,
+                 c == C_UP ? LV_SYMBOL_UP : c == C_DOWN ? LV_SYMBOL_DOWN : "",
+                 q->prev_close ? d / q->prev_close * 100.0 : 0.0);
+    }
+    return n;
 }
 
 static void stonks_create(lv_obj_t *parent)

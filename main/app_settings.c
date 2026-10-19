@@ -125,6 +125,40 @@ static lv_obj_t *mk_choices(lv_obj_t *p, const char **map, int selected,
     return m;
 }
 
+/* Finger-sized checkbox; cb gets LV_EVENT_VALUE_CHANGED. */
+static lv_obj_t *mk_checkbox(lv_obj_t *p, const char *text, bool checked, lv_event_cb_t cb)
+{
+    lv_obj_t *c = lv_checkbox_create(p);
+    lv_checkbox_set_text(c, text);
+    lv_obj_set_style_text_font(c, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(c, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_set_style_pad_column(c, 14, 0);
+    lv_obj_set_style_pad_all(c, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(c, lv_color_hex(C_BUTTON), LV_PART_INDICATOR);
+    lv_obj_set_style_border_color(c, lv_color_hex(0x5F6B77), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(c, lv_color_hex(C_ACCENT), LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_border_color(c, lv_color_hex(C_ACCENT),
+                                  LV_PART_INDICATOR | LV_STATE_CHECKED);
+    if (checked) {
+        lv_obj_add_state(c, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(c, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return c;
+}
+
+static bool is_checked(lv_event_t *e)
+{
+    return lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+}
+
+static lv_obj_t *mk_note(lv_obj_t *p, const char *text)
+{
+    lv_obj_t *n = mk_label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, text);
+    lv_obj_set_width(n, LV_PCT(100));
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+    return n;
+}
+
 static lv_obj_t *mk_tab(lv_obj_t *tv, const char *name)
 {
     lv_obj_t *t = lv_tabview_add_tab(tv, name);
@@ -275,8 +309,36 @@ static void timeout_changed(lv_event_t *e)
 
 static void fps_changed(lv_event_t *e)
 {
-    settings_set_show_fps(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+    settings_set_show_fps(is_checked(e));
     launcher_apply_fps();
+}
+
+static void ticker_changed(lv_event_t *e)
+{
+    settings_set_ticker(is_checked(e));
+    launcher_apply_ticker();
+}
+
+static void ticker_wx_changed(lv_event_t *e)
+{
+    settings_set_ticker_weather(is_checked(e));
+}
+
+static void ticker_cities_changed(lv_event_t *e)
+{
+    lv_obj_t *m = lv_event_get_target(e);
+    uint32_t mask = 0;
+    for (int i = 0; i < weather_location_count() && i < MAX_CITIES; i++) {
+        if (lv_btnmatrix_has_btn_ctrl(m, i, LV_BTNMATRIX_CTRL_CHECKED)) {
+            mask |= 1u << i;
+        }
+    }
+    settings_set_ticker_cities(mask);
+}
+
+static void ticker_stocks_changed(lv_event_t *e)
+{
+    settings_set_ticker_stocks(is_checked(e));
 }
 
 static void clock_changed(lv_event_t *e)
@@ -334,30 +396,17 @@ static void build_display_tab(lv_obj_t *tab)
     lv_obj_set_width(note, LV_PCT(100));
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 
-    lv_obj_t *fp = mk_panel(tab);
-    lv_obj_t *cb = lv_checkbox_create(fp);
-    lv_checkbox_set_text(cb, "Show FPS / CPU meter");
-    lv_obj_set_style_text_font(cb, APP_FONT_MEDIUM, 0);
-    lv_obj_set_style_text_color(cb, lv_color_hex(APP_COLOR_TEXT), 0);
-    lv_obj_set_style_pad_column(cb, 14, 0);
-    /* Bigger box, easier to hit with a finger. */
-    lv_obj_set_style_pad_all(cb, 6, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(cb, lv_color_hex(C_BUTTON), LV_PART_INDICATOR);
-    lv_obj_set_style_border_color(cb, lv_color_hex(0x5F6B77), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(cb, lv_color_hex(C_ACCENT),
-                              LV_PART_INDICATOR | LV_STATE_CHECKED);
-    lv_obj_set_style_border_color(cb, lv_color_hex(C_ACCENT),
-                                  LV_PART_INDICATOR | LV_STATE_CHECKED);
-    if (settings_get_show_fps()) {
-        lv_obj_add_state(cb, LV_STATE_CHECKED);
-    }
-    lv_obj_add_event_cb(cb, fps_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *tp = mk_panel(tab);
+    mk_checkbox(tp, "Show the info ticker on the home screen", settings_get_ticker(),
+                ticker_changed);
+    mk_note(tp, "Scrolling weather and stock updates along the bottom of the home "
+                "screen, kept up to date in the background. Choose what it shows "
+                "in the Weather and St0nks tabs.");
 
-    lv_obj_t *fnote = mk_label(fp, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT,
-                               "Frames per second and how busy the drawing "
-                               "task is, shown in the bottom-right corner.");
-    lv_obj_set_width(fnote, LV_PCT(100));
-    lv_label_set_long_mode(fnote, LV_LABEL_LONG_WRAP);
+    lv_obj_t *fp = mk_panel(tab);
+    mk_checkbox(fp, "Show FPS / CPU meter", settings_get_show_fps(), fps_changed);
+    mk_note(fp, "Frames per second and how busy the drawing task is, shown in "
+                "the bottom-right corner.");
 }
 
 static void build_time_tab(lv_obj_t *tab)
@@ -399,6 +448,33 @@ static void build_weather_tab(lv_obj_t *tab)
     int rows = (n + 1) / 2;
     mk_choices(p, s_city_map, settings_get_weather_city(), rows * 62 + (rows - 1) * 12,
                city_changed);
+
+    /* Info ticker: same buttons, but any number can be on. */
+    lv_obj_t *tp = mk_panel(tab);
+    mk_checkbox(tp, "Show weather in the info ticker", settings_get_ticker_weather(),
+                ticker_wx_changed);
+    mk_label(tp, APP_FONT_MEDIUM, APP_COLOR_TEXT, "Cities in the ticker");
+    lv_obj_t *m = mk_choices(tp, s_city_map, -1, rows * 62 + (rows - 1) * 12,
+                             ticker_cities_changed);
+    lv_btnmatrix_set_one_checked(m, false);
+    uint32_t mask = settings_get_ticker_cities();
+    for (int i = 0; i < n; i++) {
+        if (mask & (1u << i)) {
+            lv_btnmatrix_set_btn_ctrl(m, i, LV_BTNMATRIX_CTRL_CHECKED);
+        }
+    }
+    mk_note(tp, "Each city shows the current weather and the forecast for today "
+                "and tomorrow. "
+                "Turn the ticker itself on in the Display tab.");
+}
+
+static void build_stonks_tab(lv_obj_t *tab)
+{
+    lv_obj_t *p = mk_panel(tab);
+    mk_checkbox(p, "Show my watchlist in the info ticker", settings_get_ticker_stocks(),
+                ticker_stocks_changed);
+    mk_note(p, "Each symbol's price and today's change. Add or remove symbols in "
+               "the St0nks app. Turn the ticker itself on in the Display tab.");
 }
 
 static void build_about_tab(lv_obj_t *tab)
@@ -466,6 +542,7 @@ static void settings_create(lv_obj_t *parent)
     build_display_tab(mk_tab(tv, LV_SYMBOL_EYE_OPEN " Display"));
     build_time_tab(mk_tab(tv, LV_SYMBOL_BELL " Time"));
     build_weather_tab(mk_tab(tv, LV_SYMBOL_HOME " Weather"));
+    build_stonks_tab(mk_tab(tv, LV_SYMBOL_UP " St0nks"));
     build_about_tab(mk_tab(tv, LV_SYMBOL_LIST " About"));
 
     tick(NULL);

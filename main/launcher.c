@@ -14,6 +14,7 @@
 #include "launcher.h"
 #include "net_time.h"
 #include "settings.h"
+#include "ticker.h"
 #include "esp_err.h"
 
 /* Backlight helpers from waveshare_rgb_lcd_port.c (declared here because that
@@ -54,6 +55,8 @@ static const app_t *const s_apps[] = {
 static lv_obj_t   *s_home_scr;
 static lv_obj_t   *s_home_clock;
 static lv_obj_t   *s_home_wifi;
+static lv_obj_t   *s_home_grid;
+static lv_obj_t   *s_home_ticker;  /* info ticker strip, or NULL */
 static lv_obj_t   *s_folder_scr;    /* open folder's screen, or NULL */
 static const app_t *s_folder;       /* open folder, or NULL */
 static lv_obj_t   *s_app_scr;
@@ -106,7 +109,8 @@ static void make_title(lv_obj_t *bar, const char *text)
     lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 }
 
-static void build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count);
+static lv_obj_t *build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count,
+                            lv_coord_t height, bool compact);
 
 /* ---------- app screens ---------- */
 
@@ -174,7 +178,8 @@ static void open_folder(const app_t *folder)
     lv_obj_t *bar = make_top_bar(scr);
     make_back_button(bar, "Home", folder_back_clicked);
     make_title(bar, folder->name);
-    build_grid(scr, folder->folder, folder_count(folder));
+    build_grid(scr, folder->folder, folder_count(folder),
+               lv_disp_get_ver_res(NULL) - BAR_H, false);
 
     s_folder_scr = scr;
     s_folder = folder;
@@ -220,6 +225,8 @@ static void tile_clicked(lv_event_t *e)
 static void home_tick(lv_timer_t *t)
 {
     (void)t;
+    /* The ticker only scrolls while it can be seen. */
+    ticker_set_running(lv_scr_act() == s_home_scr && !s_wake_catcher);
     if (lv_scr_act() != s_home_scr) {
         return;
     }
@@ -245,10 +252,10 @@ static void home_tick(lv_timer_t *t)
     }
 }
 
-static void make_tile(lv_obj_t *grid, const app_t *app)
+static void make_tile(lv_obj_t *grid, const app_t *app, lv_coord_t w, lv_coord_t h)
 {
     lv_obj_t *tile = lv_btn_create(grid);
-    lv_obj_set_size(tile, 160, 150);
+    lv_obj_set_size(tile, w, h);
     lv_obj_set_style_radius(tile, 18, 0);
     lv_obj_set_style_bg_color(tile, lv_color_hex(app->color_hex), 0);
     lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
@@ -278,26 +285,57 @@ static void make_tile(lv_obj_t *grid, const app_t *app)
     lv_obj_set_style_text_font(name, APP_FONT_MEDIUM, 0);
 }
 
-/* Tile grid below the top bar (home screen or a folder). */
-static void build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count)
+/* Tile grid below the top bar (home screen or a folder). Compact = smaller
+ * tiles (5 per row) to make room for the info ticker. */
+static lv_obj_t *build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count,
+                            lv_coord_t height, bool compact)
 {
     lv_obj_t *grid = lv_obj_create(scr);
     lv_obj_remove_style_all(grid);
-    lv_obj_set_size(grid, LV_PCT(100), lv_disp_get_ver_res(NULL) - BAR_H);
+    lv_obj_set_size(grid, LV_PCT(100), height);
     lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, BAR_H);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_all(grid, 28, 0);
-    lv_obj_set_style_pad_row(grid, 24, 0);
-    lv_obj_set_style_pad_column(grid, 24, 0);
+    lv_obj_set_style_pad_hor(grid, compact ? 18 : 28, 0);
+    lv_obj_set_style_pad_ver(grid, compact ? 16 : 28, 0);
+    lv_obj_set_style_pad_row(grid, compact ? 16 : 24, 0);
+    lv_obj_set_style_pad_column(grid, compact ? 16 : 24, 0);
 
     /* Two passes: normal apps first, then pinned-last apps (Settings). */
     for (int pass = 0; pass < 2; pass++) {
         for (size_t i = 0; i < count; i++) {
             if (apps[i]->pin_last == (pass == 1)) {
-                make_tile(grid, apps[i]);
+                make_tile(grid, apps[i], compact ? 140 : 160, compact ? 132 : 150);
             }
         }
     }
+    return grid;
+}
+
+/* Home tiles, plus the ticker strip when it's switched on. */
+static void layout_home(void)
+{
+    if (s_home_grid) lv_obj_del(s_home_grid);
+    if (s_home_ticker) lv_obj_del(s_home_ticker);
+    s_home_ticker = NULL;
+
+    bool ticker = settings_get_ticker();
+    lv_coord_t h = lv_disp_get_ver_res(NULL) - BAR_H - (ticker ? TICKER_H : 0);
+    s_home_grid = build_grid(s_home_scr, s_apps, APP_COUNT, h, ticker);
+    if (ticker) {
+        s_home_ticker = ticker_create(s_home_scr);
+        ticker_set_running(lv_scr_act() == s_home_scr);
+    }
+}
+
+void launcher_apply_ticker(void)
+{
+    if (s_home_scr) layout_home();
+}
+
+static void ticker_service_tick(lv_timer_t *t)
+{
+    (void)t;
+    ticker_service();
 }
 
 static void build_home(void)
@@ -323,7 +361,7 @@ static void build_home(void)
     lv_obj_set_style_text_font(s_home_wifi, APP_FONT_MEDIUM, 0);
     lv_obj_align(s_home_wifi, LV_ALIGN_RIGHT_MID, -130, 0);
 
-    build_grid(s_home_scr, s_apps, APP_COUNT);
+    layout_home();
 
     lv_timer_create(home_tick, 500, NULL);
 }
@@ -403,4 +441,5 @@ void launcher_start(void)
     lv_scr_load(s_home_scr);
     lv_timer_create(screen_timeout_tick, 1000, NULL);
     lv_timer_create(fps_init_tick, 5, NULL);
+    lv_timer_create(ticker_service_tick, 1000, NULL);
 }
