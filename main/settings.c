@@ -143,6 +143,36 @@ void settings_set_i32(const char *key, int32_t value)
     }
 }
 
+bool settings_get_str(const char *key, char *out, size_t len)
+{
+    bool ok = false;
+    nvs_handle_t h;
+    if (len == 0) return false;
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t n = len;
+        ok = nvs_get_str(h, key, out, &n) == ESP_OK;
+        nvs_close(h);
+    }
+    if (!ok) out[0] = '\0';
+    return ok;
+}
+
+void settings_set_str(const char *key, const char *value)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, key, value);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Saving %s failed: %s", key, esp_err_to_name(err));
+    }
+}
+
 int settings_get_weather_city(void) { return s_weather_city; }
 
 void settings_set_weather_city(int index)

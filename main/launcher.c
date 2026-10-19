@@ -43,6 +43,7 @@ static const app_t games_folder = {
 static const app_t *const s_apps[] = {
     &world_clock_app,
     &weather_app,
+    &stonks_app,
     &games_folder,
     &settings_app,
 };

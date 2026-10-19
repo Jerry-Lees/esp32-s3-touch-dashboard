@@ -59,6 +59,8 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `app_flappy.c` | Flappy bird clone: time-based physics in a 16 ms `lv_timer`, pipes speed up and gaps narrow with the score. Best score in NVS key `flappy_best`. |
 | `app_snake.c` | Snake: swipe to steer (finger can keep moving), custom-draw board that only invalidates changed cells, speeds up with the score. NVS key `snake_best`. |
 | `app_2048.c` | 2048: game state `M` survives closing the app; one LVGL object per tile, slide/pop animations with `lv_anim`. NVS key `2048_best`. |
+| `app_stonks.c` | St0nks stock watchlist: Yahoo Finance chart API (`query1.finance.yahoo.com/v8/finance/chart/SYM?range=..&interval=..`, no key, needs a browser User-Agent). Persistent worker task + FreeRTOS job/result queues; list with sparklines, detail chart (1D-5Y, touch to scrub), add via on-screen keyboard, remove. Watchlist in NVS key `stonks_list` (comma separated, max 20). |
+| `stonks_icon.c` | **Generated** by `tools/gen_stonks_icon.py` (diamond-hands icon from Twemoji, CC-BY 4.0). |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
 | `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. 12/24-hour comes from `settings_get_24h()`. |
 | `app_weather.c` | Weather: Open-Meteo over HTTPS (`esp_http_client` + `esp_crt_bundle`), downloads in a FreeRTOS task, cJSON parsing, icons drawn from LVGL shapes, 6 locations with Lee's Summit MO as the default (`s_locs[]`), 15-minute refresh. |
@@ -92,11 +94,12 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - `sdkconfig` settings that matter: flash size **16MB**, **custom partition table `partitions.csv`**: nvs 24K @0x9000 and phy_init 4K @0xF000 (same as the old built-in table), **factory app 6M @0x10000**, **`storage` FAT ~9.9M @0x610000** (not mounted yet; meant for icons, cover art, fonts and config). The app is about 1.4 MB. Don't move or resize nvs, or saved Settings are lost. **Don't run `idf.py set-target`**: it resets sdkconfig. Edit sdkconfig choices carefully: for a Kconfig choice, unset the old option and set the new one.
 - `nvs_flash_init()` currently runs inside `net_time_start()` **only if Wi-Fi is configured**. Anything that uses NVS should initialize it early and unconditionally; it's safe to call twice.
 - **The RTC has no backup battery** (the user's board has none fitted; the user may add one later). The time survives RESET, reflashing and crashes, but not unplugging. After a power loss the RTC is ignored until Wi-Fi syncs.
+- **cJSON allocates in PSRAM**: St0nks' worker calls `cJSON_InitHooks` (PSRAM malloc, normal `free`) the first time St0nks opens. This applies to every cJSON user (Weather too); it's safe because `free()` handles both memory types.
 - Harmless build and boot warnings, which you can ignore: "esp_blockdev does not contain a CMakeLists.txt", "Could not use git describe" (disappears once commits exist), and the legacy I2C driver warning.
 
 ## Settings (done)
 
-- `settings.c/.h`: NVS-backed settings (namespace "settings", one u8 key each): `settings_get/set_24h`, `_screen_timeout_min`, `_weather_city`. Generic `settings_get/set_u8` and `settings_get/set_i32(key, default)` for apps' own values. `settings_init()` runs first in `launcher_start()` and initializes NVS unconditionally.
+- `settings.c/.h`: NVS-backed settings (namespace "settings", one u8 key each): `settings_get/set_24h`, `_screen_timeout_min`, `_weather_city`. Generic `settings_get/set_u8`, `settings_get/set_i32(key, default)` and `settings_get/set_str` for apps' own values. `settings_init()` runs first in `launcher_start()` and initializes NVS unconditionally.
 - `app_settings.c`: tabview with Network, Display, Time, Weather and About tabs. It styles widgets dark by hand because the LVGL theme is light.
 - `app_t.pin_last = true` keeps a tile last: `build_grid()` draws non-pinned apps first, then pinned ones.
 - **FPS meter:** `CONFIG_LV_USE_PERF_MONITOR` stays enabled; its label on `lv_layer_sys()` is hidden or shown by `launcher_apply_fps()` according to `settings_get_show_fps()` (key `show_fps`, default off; checkbox in Settings > Display).
@@ -117,4 +120,4 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 
 ## Ideas list (for later)
 
-Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485, SD card photo frame, and a backup battery for the RTC (RTC sync is done).
+Weather: colour-tinted cards per condition (grey icons on cloudy days look flat). Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485, SD card photo frame, and a backup battery for the RTC (RTC sync is done).

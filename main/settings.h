@@ -7,6 +7,7 @@
  * The setters save to flash immediately.
  */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 void settings_init(void);
@@ -35,3 +36,7 @@ void settings_set_u8(const char *key, int value);
 /* Same for larger numbers, e.g. a high score. */
 int32_t settings_get_i32(const char *key, int32_t def);
 void    settings_set_i32(const char *key, int32_t value);
+/* Text (e.g. the St0nks watchlist). get copies the value into out (at most
+ * len bytes, always terminated) and returns false if the key is missing. */
+bool settings_get_str(const char *key, char *out, size_t len);
+void settings_set_str(const char *key, const char *value);
