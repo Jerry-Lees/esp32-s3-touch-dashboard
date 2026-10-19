@@ -1,6 +1,7 @@
 /*
  * St0nks: a stock watchlist. Prices come from Yahoo Finance's public chart
- * API (no key needed; quotes are delayed about 15 minutes).
+ * API (no key needed; quotes are delayed about 15 minutes). Earnings report
+ * dates (the quarterly call) come from Nasdaq's public API, US stocks only.
  *
  * Screens (both inside the app's area):
  *   - List: one row per symbol with price, today's change and a sparkline.
@@ -12,6 +13,9 @@
  * {symbol, range} from s_jobs, downloads and parses them, and sends a
  * heap-allocated quote_t* back through s_results. The LVGL timer drains
  * s_results and owns all the data after that. No LVGL calls in the worker.
+ *
+ * Refreshes: prices every 15 minutes (the refresh button fetches at once),
+ * earnings dates every 12 hours.
  *
  * The watchlist is saved in NVS (key "stonks_list", comma separated). The
  * downloaded data stays in PSRAM while the app is closed, so reopening it
@@ -50,6 +54,9 @@ extern const lv_img_dsc_t img_stonks_icon, img_stonks_small;
 #define MAX_PTS      300
 #define LIST_KEY     "stonks_list"
 #define DEFAULT_LIST "GME,AMC,SPY,AAPL,NVDA,BTC-USD"
+#define REFRESH_US   (15LL * 60 * 1000000)
+#define EARN_OK_US   (12LL * 3600 * 1000000)   /* re-check earnings dates */
+#define EARN_FAIL_US (60LL * 60 * 1000000)     /* retry after a failed check */
 
 #define C_UP         0x00C853
 #define C_DOWN       0xFF5252
@@ -61,6 +68,7 @@ extern const lv_img_dsc_t img_stonks_icon, img_stonks_small;
 #define C_BUTTON     0x2A333C
 
 enum { R_1D, R_5D, R_1M, R_6M, R_1Y, R_5Y, R_COUNT };
+#define R_EARN 100   /* job "range" that fetches earnings dates instead */
 
 static const struct {
     const char *range, *interval, *phrase;
@@ -84,6 +92,8 @@ typedef struct {
     char     currency[8];
     char     exchange[24];
     bool     crypto;
+    bool     equity;                    /* a company's stock (has earnings) */
+    int      earn_next, earn_last;      /* R_EARN jobs: YYYYMMDD, 0 = none */
     double   price, prev_close, chart_prev;
     double   day_hi, day_lo, wk_hi, wk_lo, volume;
     int64_t  mkt_time;
@@ -112,6 +122,9 @@ typedef struct {
     char     sym[SYM_LEN];
     quote_t *q;                    /* latest 1D download, or NULL */
     bool     failed;               /* last refresh failed; q is older data */
+    int      earn_next, earn_last; /* earnings report dates, YYYYMMDD or 0 */
+    int64_t  earn_due_us;          /* when to check them again; 0 = now */
+    bool     earn_pending;
 } entry_t;
 
 static struct {
@@ -134,7 +147,8 @@ static struct {
     lv_obj_t   *r_price[MAX_SYMS], *r_chg[MAX_SYMS], *r_pill[MAX_SYMS],
                *r_pct[MAX_SYMS], *r_name[MAX_SYMS], *r_spark[MAX_SYMS];
     lv_obj_t   *d_sym, *d_name, *d_price, *d_chg, *d_when, *d_chart;
-    lv_obj_t   *d_stat[7];
+    lv_obj_t   *r_earn[MAX_SYMS];
+    lv_obj_t   *d_stat[8], *d_earn_title;
     lv_obj_t   *ta, *add_msg;
     int         scrub;             /* chart point under the finger, or -1 */
     lv_timer_t *timer;
@@ -208,6 +222,7 @@ static bool parse_chart(const char *json, quote_t *q)
     jstr(meta, "fullExchangeName", q->exchange, sizeof(q->exchange));
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(meta, "instrumentType");
     q->crypto = cJSON_IsString(type) && strcmp(type->valuestring, "CRYPTOCURRENCY") == 0;
+    q->equity = cJSON_IsString(type) && strcmp(type->valuestring, "EQUITY") == 0;
 
     q->price      = jnum(meta, "regularMarketPrice", NAN);
     q->chart_prev = jnum(meta, "chartPreviousClose", NAN);
@@ -271,7 +286,42 @@ static void url_encode(const char *in, char *out, size_t n)
     out[o] = '\0';
 }
 
-static void fetch(const job_t *job, quote_t *q)
+/* Downloads url into hb (hb->buf must have room for cap + 1 bytes).
+ * Returns the HTTP status, or -1 if the download itself failed. */
+static int http_get(const char *url, http_buf_t *hb)
+{
+    hb->len = 0;
+    hb->overflow = false;
+    hb->buf[0] = '\0';
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .event_handler     = http_event,
+        .user_data         = hb,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 15000,
+        .buffer_size       = 4096,      /* Yahoo sends long headers */
+        .buffer_size_tx    = 1024,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return -1;
+    /* Yahoo and Nasdaq refuse requests without a browser-like User-Agent. */
+    esp_http_client_set_header(client, "User-Agent", "Mozilla/5.0 (X11; Linux x86_64)");
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s: %s", url, esp_err_to_name(err));
+        return -1;
+    }
+    if (hb->overflow) {
+        ESP_LOGW(TAG, "%s: response too large", url);
+        return -1;
+    }
+    return status;
+}
+
+static void fetch(const job_t *job, quote_t *q, http_buf_t *hb)
 {
     char sym[48], url[200];
     url_encode(job->sym, sym, sizeof(sym));
@@ -279,43 +329,100 @@ static void fetch(const job_t *job, quote_t *q)
              "https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=%s",
              sym, RANGES[job->range].range, RANGES[job->range].interval);
 
-    http_buf_t hb = { .cap = 64 * 1024 };
-    hb.buf = heap_caps_malloc(hb.cap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!hb.buf) {
-        snprintf(q->err, sizeof(q->err), "Out of memory");
+    int status = http_get(url, hb);
+    if (status == 200 || status == 404) {
+        q->ok = parse_chart(hb->buf, q);
+    } else {
+        ESP_LOGW(TAG, "%s: HTTP %d", job->sym, status);
+        snprintf(q->err, sizeof(q->err),
+                 status == 429 ? "Too many requests" : "Download failed");
+    }
+}
+
+/* ---------- earnings dates (Nasdaq) ---------- */
+
+static int ymd(int y, int m, int d)
+{
+    return (y >= 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31) ? y * 10000 + m * 100 + d : 0;
+}
+
+/* Today's local date as YYYYMMDD, or 0 if the clock isn't set. */
+static int today_ymd(void)
+{
+    if (!net_time_is_synced()) return 0;
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    return ymd(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+}
+
+static const char *const MONTHS[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+/* {"data":{"announcement":"Earnings announcement* for AAPL: Nov 02, 2026"}} */
+static int parse_next_earnings(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    const cJSON *a = cJSON_GetObjectItemCaseSensitive(
+        cJSON_GetObjectItemCaseSensitive(root, "data"), "announcement");
+    int date = 0;
+    const char *p = cJSON_IsString(a) ? strrchr(a->valuestring, ':') : NULL;
+    char mon[4];
+    int d, y;
+    if (p && sscanf(p + 1, " %3s %d, %d", mon, &d, &y) == 3) {
+        for (int m = 0; m < 12; m++) {
+            if (strcmp(mon, MONTHS[m]) == 0) date = ymd(y, m + 1, d);
+        }
+    }
+    cJSON_Delete(root);
+    return date;
+}
+
+/* {"data":{"earningsSurpriseTable":{"rows":[{"dateReported":"7/30/2026",..}]}}}
+ * The newest report comes first. */
+static int parse_last_earnings(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    const cJSON *t = cJSON_GetObjectItemCaseSensitive(
+        cJSON_GetObjectItemCaseSensitive(root, "data"), "earningsSurpriseTable");
+    const cJSON *row = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(t, "rows"), 0);
+    const cJSON *dr = cJSON_GetObjectItemCaseSensitive(row, "dateReported");
+    int date = 0, m, d, y;
+    if (cJSON_IsString(dr) && sscanf(dr->valuestring, "%d/%d/%d", &m, &d, &y) == 3) {
+        date = ymd(y, m, d);
+    }
+    cJSON_Delete(root);
+    return date;
+}
+
+/* The next scheduled report; if there isn't one coming up, the last one. */
+static void fetch_earnings(const job_t *job, quote_t *q, http_buf_t *hb)
+{
+    char sym[48], url[200];
+    url_encode(job->sym, sym, sizeof(sym));
+
+    snprintf(url, sizeof(url), "https://api.nasdaq.com/api/analyst/%s/earnings-date", sym);
+    int status = http_get(url, hb);
+    if (status != 200) {
+        ESP_LOGW(TAG, "%s earnings: HTTP %d", job->sym, status);
         return;
     }
-    hb.buf[0] = '\0';
-
-    esp_http_client_config_t cfg = {
-        .url               = url,
-        .event_handler     = http_event,
-        .user_data         = &hb,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 15000,
-        .buffer_size       = 4096,      /* Yahoo sends long headers */
-        .buffer_size_tx    = 1024,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (client) {
-        /* Yahoo refuses requests without a browser-like User-Agent. */
-        esp_http_client_set_header(client, "User-Agent", "Mozilla/5.0 (X11; Linux x86_64)");
-        esp_err_t err = esp_http_client_perform(client);
-        int status = esp_http_client_get_status_code(client);
-        esp_http_client_cleanup(client);
-
-        if (err == ESP_OK && (status == 200 || status == 404) && !hb.overflow) {
-            q->ok = parse_chart(hb.buf, q);
-        } else {
-            ESP_LOGW(TAG, "%s: %s, HTTP %d%s", job->sym, esp_err_to_name(err), status,
-                     hb.overflow ? ", response too large" : "");
-            snprintf(q->err, sizeof(q->err),
-                     status == 429 ? "Too many requests" : "Download failed");
-        }
-    } else {
-        snprintf(q->err, sizeof(q->err), "Download failed");
+    q->earn_next = parse_next_earnings(hb->buf);
+    int today = today_ymd();
+    if (q->earn_next && today && q->earn_next >= today) {
+        q->ok = true;
+        return;
     }
-    free(hb.buf);
+
+    vTaskDelay(pdMS_TO_TICKS(100));
+    snprintf(url, sizeof(url), "https://api.nasdaq.com/api/company/%s/earnings-surprise", sym);
+    status = http_get(url, hb);
+    if (status != 200) {
+        ESP_LOGW(TAG, "%s earnings: HTTP %d", job->sym, status);
+        return;
+    }
+    q->earn_last = parse_last_earnings(hb->buf);
+    q->ok = true;
 }
 
 static void *psram_malloc(size_t n)
@@ -333,6 +440,9 @@ static void worker_task(void *arg)
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = free };
     cJSON_InitHooks(&hooks);
 
+    http_buf_t hb = { .cap = 64 * 1024 };
+    hb.buf = heap_caps_malloc(hb.cap + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
     job_t job;
     for (;;) {
         xQueueReceive(s_jobs, &job, portMAX_DELAY);
@@ -340,7 +450,13 @@ static void worker_task(void *arg)
         if (q) {
             memcpy(q->sym, job.sym, sizeof(q->sym));
             q->range = job.range;
-            fetch(&job, q);
+            if (!hb.buf) {
+                snprintf(q->err, sizeof(q->err), "Out of memory");
+            } else if (job.range == R_EARN) {
+                fetch_earnings(&job, q, &hb);
+            } else {
+                fetch(&job, q, &hb);
+            }
             q->fetched_us = esp_timer_get_time();
             xQueueSend(s_results, &q, portMAX_DELAY);
         }
@@ -361,15 +477,18 @@ static void worker_init(void)
 
 static int inflight(void) { return __atomic_load_n(&s_inflight, __ATOMIC_ACQUIRE); }
 
-static void request(const char *sym, int range)
+/* Queues a download; false if it couldn't be queued. */
+static bool request(const char *sym, int range)
 {
-    if (!s_jobs || !net_time_wifi_connected()) return;
+    if (!s_jobs || !net_time_wifi_connected()) return false;
     job_t job = { .range = range };
     snprintf(job.sym, sizeof(job.sym), "%s", sym);
     __atomic_add_fetch(&s_inflight, 1, __ATOMIC_ACQ_REL);
     if (xQueueSend(s_jobs, &job, 0) != pdTRUE) {
         __atomic_sub_fetch(&s_inflight, 1, __ATOMIC_ACQ_REL);
+        return false;
     }
+    return true;
 }
 
 static void refresh_all(void)
@@ -515,6 +634,25 @@ static int market_open(const quote_t *q)
     if (!net_time_is_synced() || q->open_end == 0) return -1;
     time_t now = time(NULL);
     return now >= q->open_start && now < q->open_end;
+}
+
+/* The earnings date to show: the next report if one is scheduled, else the
+ * last one. Returns the date (YYYYMMDD, 0 = nothing known). */
+static int earnings_date(const entry_t *en, bool *upcoming)
+{
+    int today = today_ymd();
+    *upcoming = en->earn_next && (!today || en->earn_next >= today);
+    if (*upcoming) return en->earn_next;
+    /* A "next" date that has passed is the latest report too. */
+    return en->earn_next > en->earn_last ? en->earn_next : en->earn_last;
+}
+
+/* "Nov 2" or, with the year, "Nov 2, 2026". */
+static void fmt_ymd(char *out, size_t n, int date, bool year)
+{
+    int y = date / 10000, m = date / 100 % 100, d = date % 100;
+    if (year) snprintf(out, n, "%s %d, %d", MONTHS[m - 1], d, y);
+    else      snprintf(out, n, "%s %d", MONTHS[m - 1], d);
 }
 
 /* ======================= charts ======================= */
@@ -806,6 +944,21 @@ static void update_detail(void)
     lv_label_set_text(U.d_stat[5], buf);
     lv_label_set_text(U.d_stat[6], info && info->ok && info->exchange[0] ? info->exchange : "--");
 
+    int ei = find_sym(D.detail_sym);
+    bool upcoming = false;
+    int edate = ei >= 0 ? earnings_date(&D.ent[ei], &upcoming) : 0;
+    if (edate) {
+        fmt_ymd(buf, sizeof(buf), edate, true);
+        if (upcoming && edate == today_ymd()) strlcat(buf, " (today)", sizeof(buf));
+        lv_label_set_text(U.d_earn_title, upcoming ? "Next earnings call" : "Last earnings call");
+        lv_label_set_text(U.d_stat[7], buf);
+    } else {
+        lv_label_set_text(U.d_earn_title, "Earnings call");
+        bool waiting = ei >= 0 && info && info->ok && info->equity &&
+                       (D.ent[ei].earn_pending || D.ent[ei].earn_due_us == 0);
+        lv_label_set_text(U.d_stat[7], waiting ? "Checking..." : "--");
+    }
+
     lv_obj_invalidate(U.d_chart);
 }
 
@@ -813,7 +966,7 @@ static void request_detail(void)
 {
     if (D.detail_range == R_1D) return;    /* the list refresh covers 1D */
     const quote_t *q = detail_quote();
-    if (q && esp_timer_get_time() - q->fetched_us < 5LL * 60 * 1000000) return;
+    if (q && esp_timer_get_time() - q->fetched_us < REFRESH_US) return;
     request(D.detail_sym, D.detail_range);
 }
 
@@ -985,8 +1138,8 @@ static void build_detail(void)
     lv_obj_add_event_cb(m, range_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* Stats panel on the right. */
-    static const char *names[7] = { "Prev close", "Day high", "Day low", "52-wk high",
-                                    "52-wk low", "Volume", "Exchange" };
+    static const char *names[8] = { "Prev close", "Day high", "Day low", "52-wk high",
+                                    "52-wk low", "Volume", "Exchange", "Earnings call" };
     lv_obj_t *panel = lv_obj_create(v);
     lv_obj_remove_style_all(panel);
     lv_obj_set_size(panel, 240, 346);
@@ -995,14 +1148,15 @@ static void build_detail(void)
     lv_obj_set_style_bg_color(panel, lv_color_hex(APP_COLOR_PANEL), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
         lv_obj_t *n = mk_label(panel, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT);
         lv_label_set_text(n, names[i]);
-        lv_obj_set_pos(n, 14, 14 + i * 47);
+        lv_obj_set_pos(n, 14, 10 + i * 41);
         U.d_stat[i] = mk_label(panel, APP_FONT_MEDIUM, APP_COLOR_TEXT);
         lv_label_set_long_mode(U.d_stat[i], LV_LABEL_LONG_DOT);
         lv_obj_set_width(U.d_stat[i], 212);
-        lv_obj_set_pos(U.d_stat[i], 14, 30 + i * 47);
+        lv_obj_set_pos(U.d_stat[i], 14, 26 + i * 41);
+        if (i == 7) U.d_earn_title = n;
     }
 
     lv_obj_t *rm = mk_button(v, LV_SYMBOL_TRASH "  Remove", 240, 50, remove_clicked, NULL);
@@ -1065,6 +1219,19 @@ static void update_row(int i)
         lv_obj_set_style_bg_color(U.r_pill[i], lv_color_hex(
             c == C_UP ? C_PILL_UP : c == C_DOWN ? C_PILL_DOWN : C_PILL_FLAT), 0);
     }
+
+    bool upcoming = false;
+    int edate = earnings_date(&D.ent[i], &upcoming);
+    if (edate) {
+        char d[16];
+        fmt_ymd(d, sizeof(d), edate, false);
+        if (upcoming && edate == today_ymd()) snprintf(buf, sizeof(buf), "Earnings today");
+        else snprintf(buf, sizeof(buf), "%s %s", upcoming ? "Earnings" : "Reported", d);
+        lv_label_set_text(U.r_earn[i], buf);
+        lv_obj_set_style_text_color(U.r_earn[i], lv_color_hex(upcoming ? 0xFFD54F : C_FLAT), 0);
+    } else {
+        lv_label_set_text(U.r_earn[i], "");
+    }
     lv_obj_invalidate(U.r_spark[i]);
 }
 
@@ -1125,6 +1292,14 @@ static void build_rows(void)
         lv_obj_t *sym = mk_label(r, APP_FONT_LARGE, APP_COLOR_TEXT);
         lv_label_set_text(sym, D.ent[i].sym);
         lv_obj_set_pos(sym, 16, 6);
+        lv_obj_update_layout(sym);
+
+        /* Earnings date, to the right of the symbol. */
+        lv_coord_t ex = 16 + lv_obj_get_width(sym) + 10;
+        U.r_earn[i] = mk_label(r, LV_FONT_DEFAULT, C_FLAT);
+        lv_label_set_long_mode(U.r_earn[i], LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(U.r_earn[i], LV_MAX(272 - ex, 0));
+        lv_obj_set_pos(U.r_earn[i], ex, 16);
 
         U.r_name[i] = mk_label(r, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT);
         lv_label_set_long_mode(U.r_name[i], LV_LABEL_LONG_DOT);
@@ -1317,7 +1492,23 @@ static void build_list(void)
 
 static void handle_result(quote_t *q)
 {
-    if (q->range == R_1D) {
+    if (q->range == R_EARN) {
+        int i = find_sym(q->sym);
+        if (i >= 0) {
+            entry_t *en = &D.ent[i];
+            en->earn_pending = false;
+            if (q->ok) {
+                en->earn_next = q->earn_next;
+                en->earn_last = q->earn_last;
+            }
+            en->earn_due_us = esp_timer_get_time() + (q->ok ? EARN_OK_US : EARN_FAIL_US);
+            if (U.root) {
+                update_row(i);
+                if (U.detail_view && strcmp(D.detail_sym, en->sym) == 0) update_detail();
+            }
+        }
+        free(q);
+    } else if (q->range == R_1D) {
         int i = find_sym(q->sym);
         if (i < 0) {                         /* removed meanwhile */
             free(q);
@@ -1354,15 +1545,22 @@ static void service(void)
         handle_result(q);
     }
 
-    /* Auto refresh: every minute while the market is open (or anything in
-     * the list trades 24/7), every 15 minutes otherwise. */
-    int64_t every = 15 * 60;
-    for (int i = 0; i < D.n; i++) {
-        if (market_open(D.ent[i].q) != 0) every = 60;
-    }
-    if (D.last_refresh_us == 0 ||
-        esp_timer_get_time() - D.last_refresh_us > every * 1000000LL) {
+    /* Prices every 15 minutes; the refresh button is there for sooner. */
+    int64_t now = esp_timer_get_time();
+    if (D.last_refresh_us == 0 || now - D.last_refresh_us > REFRESH_US) {
         refresh_all();
+    }
+
+    /* Earnings dates, once the prices are in (they tell which symbols are
+     * company stocks; ETFs, indexes and crypto have no earnings calls). */
+    if (inflight() == 0 && net_time_wifi_connected()) {
+        for (int i = 0; i < D.n; i++) {
+            entry_t *en = &D.ent[i];
+            if (en->q && en->q->ok && en->q->equity && !en->earn_pending &&
+                now >= en->earn_due_us) {
+                en->earn_pending = request(en->sym, R_EARN);
+            }
+        }
     }
 }
 
