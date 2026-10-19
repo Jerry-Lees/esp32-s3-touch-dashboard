@@ -14,6 +14,7 @@
 #include "launcher.h"
 #include "net_time.h"
 #include "settings.h"
+#include "screenshot.h"
 #include "ticker.h"
 #include "esp_err.h"
 
@@ -75,6 +76,7 @@ static lv_obj_t *make_top_bar(lv_obj_t *scr)
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(bar, 16, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    screenshot_attach(bar);   /* long-press: send the screen to the PC */
     return bar;
 }
 

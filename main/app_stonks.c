@@ -1593,10 +1593,20 @@ int stonks_ticker_items(char (*out)[TICKER_ITEM_LEN], int max)
         fmt_money(price, sizeof(price), q->price, q->currency);
         double d = q->price - q->prev_close;
         uint32_t c = change_color(q->price, q->prev_close);
-        snprintf(out[n++], TICKER_ITEM_LEN, "#FFD54F %s#  %s  #%06" PRIX32 " %s %+.2f%%#",
-                 q->sym, price, c,
-                 c == C_UP ? LV_SYMBOL_UP : c == C_DOWN ? LV_SYMBOL_DOWN : "",
-                 q->prev_close ? d / q->prev_close * 100.0 : 0.0);
+        int len = snprintf(out[n], TICKER_ITEM_LEN, "#FFD54F %s#  %s  #%06" PRIX32 " %s %+.2f%%#",
+                           q->sym, price, c,
+                           c == C_UP ? LV_SYMBOL_UP : c == C_DOWN ? LV_SYMBOL_DOWN : "",
+                           q->prev_close ? d / q->prev_close * 100.0 : 0.0);
+        bool upcoming;
+        int edate = earnings_date(&D.ent[i], &upcoming);
+        if (edate && len > 0 && len < TICKER_ITEM_LEN) {
+            char ed[16];
+            fmt_ymd(ed, sizeof(ed), edate, false);
+            if (upcoming && edate == today_ymd()) snprintf(ed, sizeof(ed), "today");
+            snprintf(out[n] + len, TICKER_ITEM_LEN - len, "   #B0BEC5 %s# %s",
+                     upcoming ? "Earnings" : "Reported", ed);
+        }
+        n++;
     }
     return n;
 }
