@@ -123,4 +123,9 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 
 ## Ideas list (for later)
 
-Weather: colour-tinted cards per condition (grey icons on cloudy days look flat). Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485, SD card photo frame, and a backup battery for the RTC (RTC sync is done).
+Weather: colour-tinted cards per condition (grey icons on cloudy days look flat). Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485 and an SD card photo frame.
+
+**Very, very low priority** (the user said so; don't suggest them as next steps):
+
+- **Sound:** the board has no speaker, buzzer or audio chip. Options: a 12/24 V buzzer on an isolated output (DO0/DO1, needs a 7-36 V DC supply), or an I2S amplifier (e.g. MAX98357A), which needs 3 free GPIOs taken from RS485/CAN/SD. Bluetooth speakers are impossible: the ESP32-S3 has BLE only, no Classic/A2DP.
+- **Batteries:** a CR927 coin cell in the RTC holder (keeps time when unplugged; RTC sync is already done), and a 3.7 V single-cell LiPo on the MX1.25 connector (with its own switch) to run the device unplugged.
