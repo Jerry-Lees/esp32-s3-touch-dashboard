@@ -15,10 +15,14 @@
  *
  * Apps with pin_last = true (Settings) are always drawn after all the
  * others, wherever they sit in s_apps[].
+ *
+ * Folders: an app_t with `folder` set (a NULL-terminated list of apps) is
+ * a folder tile; tapping it opens a grid of those apps. Folders are defined
+ * in launcher.c next to s_apps[] (e.g. "Games").
  */
 #include "lvgl.h"
 
-typedef struct {
+typedef struct app_s {
     const char *name;
     const char *symbol;      /* e.g. LV_SYMBOL_BELL; shown on the tile */
     uint32_t    color_hex;   /* tile colour, e.g. 0x2E7D32 */
@@ -29,6 +33,9 @@ typedef struct {
     void (*draw_icon)(lv_obj_t *holder, int size);
     /* true = always show this tile at the end of the home screen. */
     bool pin_last;
+    /* Non-NULL = this tile is a folder of these apps (NULL-terminated);
+     * create/destroy are then unused. */
+    const struct app_s *const *folder;
 } app_t;
 
 /* ---- Registered apps ---- */
@@ -36,6 +43,7 @@ extern const app_t world_clock_app;
 extern const app_t weather_app;
 extern const app_t chess_app;
 extern const app_t checkers_app;
+extern const app_t flappy_app;
 extern const app_t settings_app;
 
 /* Weather locations, so Settings can offer a default-city choice. */

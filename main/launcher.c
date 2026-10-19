@@ -1,6 +1,7 @@
 /*
  * Home screen: a grid of app tiles. Tapping a tile opens the app on its own
- * screen with a "Home" button in the top bar.
+ * screen with a "Home" button in the top bar. A folder tile (app_t.folder)
+ * opens a second grid; apps opened from there go back to the folder.
  *
  * Everything here runs in the LVGL task (event callbacks and lv_timers),
  * so no extra locking is needed.
@@ -21,12 +22,26 @@ esp_err_t wavesahre_rgb_lcd_bl_on(void);
 esp_err_t wavesahre_rgb_lcd_bl_off(void);
 
 /* ---- App registry: add new apps here ----
- * Order = tile order, except apps with pin_last (Settings) always go last. */
-static const app_t *s_apps[] = {
-    &world_clock_app,
-    &weather_app,
+ * Order = tile order, except apps with pin_last (Settings) always go last.
+ * Folder contents are NULL-terminated lists. */
+static const app_t *const s_games[] = {
     &chess_app,
     &checkers_app,
+    &flappy_app,
+    NULL,
+};
+
+static const app_t games_folder = {
+    .name      = "Games",
+    .symbol    = LV_SYMBOL_DIRECTORY,
+    .color_hex = 0x5E35B1,
+    .folder    = s_games,
+};
+
+static const app_t *const s_apps[] = {
+    &world_clock_app,
+    &weather_app,
+    &games_folder,
     &settings_app,
 };
 #define APP_COUNT (sizeof(s_apps) / sizeof(s_apps[0]))
@@ -36,6 +51,8 @@ static const app_t *s_apps[] = {
 static lv_obj_t   *s_home_scr;
 static lv_obj_t   *s_home_clock;
 static lv_obj_t   *s_home_wifi;
+static lv_obj_t   *s_folder_scr;    /* open folder's screen, or NULL */
+static const app_t *s_folder;       /* open folder, or NULL */
 static lv_obj_t   *s_app_scr;
 static const app_t *s_current_app;
 static lv_obj_t   *s_wake_catcher;  /* non-NULL while the screen is asleep */
@@ -64,6 +81,30 @@ static lv_obj_t *make_screen(void)
     return scr;
 }
 
+static void make_back_button(lv_obj_t *bar, const char *to, lv_event_cb_t cb)
+{
+    lv_obj_t *back = lv_btn_create(bar);
+    lv_obj_set_size(back, 130, 44);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(back, 22, 0);
+    lv_obj_add_event_cb(back, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_label_set_text_fmt(back_lbl, LV_SYMBOL_LEFT "  %s", to);
+    lv_obj_set_style_text_font(back_lbl, APP_FONT_MEDIUM, 0);
+    lv_obj_center(back_lbl);
+}
+
+static void make_title(lv_obj_t *bar, const char *text)
+{
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, text);
+    lv_obj_set_style_text_font(title, APP_FONT_LARGE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+}
+
+static void build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count);
+
 /* ---------- app screens ---------- */
 
 static void back_clicked(lv_event_t *e)
@@ -74,7 +115,7 @@ static void back_clicked(lv_event_t *e)
     }
     s_current_app = NULL;
 
-    lv_scr_load(s_home_scr);
+    lv_scr_load(s_folder_scr ? s_folder_scr : s_home_scr);
     if (s_app_scr) {
         /* Async: we're inside an event from a child of this screen. */
         lv_obj_del_async(s_app_scr);
@@ -87,22 +128,8 @@ static void launch_app(const app_t *app)
     lv_obj_t *scr = make_screen();
 
     lv_obj_t *bar = make_top_bar(scr);
-
-    lv_obj_t *back = lv_btn_create(bar);
-    lv_obj_set_size(back, 130, 44);
-    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_radius(back, 22, 0);
-    lv_obj_add_event_cb(back, back_clicked, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  Home");
-    lv_obj_set_style_text_font(back_lbl, APP_FONT_MEDIUM, 0);
-    lv_obj_center(back_lbl);
-
-    lv_obj_t *title = lv_label_create(bar);
-    lv_label_set_text(title, app->name);
-    lv_obj_set_style_text_font(title, APP_FONT_LARGE, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(APP_COLOR_TEXT), 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+    make_back_button(bar, s_folder ? s_folder->name : "Home", back_clicked);
+    make_title(bar, app->name);
 
     /* Area below the bar that belongs to the app. */
     lv_obj_t *content = lv_obj_create(scr);
@@ -118,10 +145,71 @@ static void launch_app(const app_t *app)
     lv_scr_load(scr);
 }
 
+/* ---------- folder screens ---------- */
+
+static void folder_back_clicked(lv_event_t *e)
+{
+    (void)e;
+    lv_scr_load(s_home_scr);
+    if (s_folder_scr) {
+        lv_obj_del_async(s_folder_scr);   /* we're inside its event */
+        s_folder_scr = NULL;
+    }
+    s_folder = NULL;
+}
+
+static size_t folder_count(const app_t *folder)
+{
+    size_t n = 0;
+    while (folder->folder[n]) n++;
+    return n;
+}
+
+static void open_folder(const app_t *folder)
+{
+    lv_obj_t *scr = make_screen();
+    lv_obj_t *bar = make_top_bar(scr);
+    make_back_button(bar, "Home", folder_back_clicked);
+    make_title(bar, folder->name);
+    build_grid(scr, folder->folder, folder_count(folder));
+
+    s_folder_scr = scr;
+    s_folder = folder;
+    lv_scr_load(scr);
+}
+
+/* Folder tile icon: a 2 x 2 preview of the apps inside, in their colours. */
+static void draw_folder_preview(lv_obj_t *holder, const app_t *folder, int size)
+{
+    const int gap = 6, cell = (size - gap) / 2;
+    size_t n = folder_count(folder);
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *c = lv_obj_create(holder);
+        lv_obj_remove_style_all(c);
+        lv_obj_set_size(c, cell, cell);
+        lv_obj_set_pos(c, (i % 2) * (cell + gap), (i / 2) * (cell + gap));
+        lv_obj_set_style_radius(c, 7, 0);
+        lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+        if ((size_t)i < n) {
+            lv_obj_set_style_bg_color(c, lv_color_hex(folder->folder[i]->color_hex), 0);
+            lv_obj_set_style_border_color(c, lv_color_white(), 0);
+            lv_obj_set_style_border_width(c, 2, 0);
+        } else {
+            lv_obj_set_style_bg_color(c, lv_color_white(), 0);
+            lv_obj_set_style_bg_opa(c, LV_OPA_20, 0);
+        }
+        lv_obj_clear_flag(c, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    }
+}
+
 static void tile_clicked(lv_event_t *e)
 {
     const app_t *app = (const app_t *)lv_event_get_user_data(e);
-    launch_app(app);
+    if (app->folder) {
+        open_folder(app);
+    } else {
+        launch_app(app);
+    }
 }
 
 /* ---------- home screen ---------- */
@@ -166,12 +254,16 @@ static void make_tile(lv_obj_t *grid, const app_t *app)
     lv_obj_set_style_pad_row(tile, 12, 0);
     lv_obj_add_event_cb(tile, tile_clicked, LV_EVENT_CLICKED, (void *)app);
 
-    if (app->draw_icon) {
+    if (app->draw_icon || app->folder) {
         lv_obj_t *holder = lv_obj_create(tile);
         lv_obj_remove_style_all(holder);
         lv_obj_set_size(holder, 64, 64);
         lv_obj_clear_flag(holder, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        app->draw_icon(holder, 64);
+        if (app->draw_icon) {
+            app->draw_icon(holder, 64);
+        } else {
+            draw_folder_preview(holder, app, 64);
+        }
     } else {
         lv_obj_t *icon = lv_label_create(tile);
         lv_label_set_text(icon, app->symbol);
@@ -181,6 +273,28 @@ static void make_tile(lv_obj_t *grid, const app_t *app)
     lv_obj_t *name = lv_label_create(tile);
     lv_label_set_text(name, app->name);
     lv_obj_set_style_text_font(name, APP_FONT_MEDIUM, 0);
+}
+
+/* Tile grid below the top bar (home screen or a folder). */
+static void build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count)
+{
+    lv_obj_t *grid = lv_obj_create(scr);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_size(grid, LV_PCT(100), lv_disp_get_ver_res(NULL) - BAR_H);
+    lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, BAR_H);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_all(grid, 28, 0);
+    lv_obj_set_style_pad_row(grid, 24, 0);
+    lv_obj_set_style_pad_column(grid, 24, 0);
+
+    /* Two passes: normal apps first, then pinned-last apps (Settings). */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < count; i++) {
+            if (apps[i]->pin_last == (pass == 1)) {
+                make_tile(grid, apps[i]);
+            }
+        }
+    }
 }
 
 static void build_home(void)
@@ -206,24 +320,7 @@ static void build_home(void)
     lv_obj_set_style_text_font(s_home_wifi, APP_FONT_MEDIUM, 0);
     lv_obj_align(s_home_wifi, LV_ALIGN_RIGHT_MID, -130, 0);
 
-    /* Tile grid */
-    lv_obj_t *grid = lv_obj_create(s_home_scr);
-    lv_obj_remove_style_all(grid);
-    lv_obj_set_size(grid, LV_PCT(100), lv_disp_get_ver_res(NULL) - BAR_H);
-    lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, BAR_H);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_all(grid, 28, 0);
-    lv_obj_set_style_pad_row(grid, 24, 0);
-    lv_obj_set_style_pad_column(grid, 24, 0);
-
-    /* Two passes: normal apps first, then pinned-last apps (Settings). */
-    for (int pass = 0; pass < 2; pass++) {
-        for (size_t i = 0; i < APP_COUNT; i++) {
-            if (s_apps[i]->pin_last == (pass == 1)) {
-                make_tile(grid, s_apps[i]);
-            }
-        }
-    }
+    build_grid(s_home_scr, s_apps, APP_COUNT);
 
     lv_timer_create(home_tick, 500, NULL);
 }

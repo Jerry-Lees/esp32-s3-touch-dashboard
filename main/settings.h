@@ -7,6 +7,7 @@
  * The setters save to flash immediately.
  */
 #include <stdbool.h>
+#include <stdint.h>
 
 void settings_init(void);
 
@@ -27,3 +28,6 @@ void settings_set_weather_city(int index);
  * Keys are at most 15 characters. */
 int  settings_get_u8(const char *key, int def);
 void settings_set_u8(const char *key, int value);
+/* Same for larger numbers, e.g. a high score. */
+int32_t settings_get_i32(const char *key, int32_t def);
+void    settings_set_i32(const char *key, int32_t value);

@@ -46,16 +46,17 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `waveshare_rgb_lcd_port.c/.h` | Waveshare's LCD, touch and CH422G init. Uses the **legacy I2C driver** (`driver/i2c.h`), so don't mix in the new `i2c_master` driver on the same port. |
 | `lvgl_port.c/.h` | Waveshare's LVGL glue and LVGL task. **`lvgl_port.h` line 21: `#define CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_GT911 1`.** It shipped as `0`, which disabled touch; we changed it to 1. |
 | `app_framework.h` | `app_t` struct, shared fonts (`APP_FONT_HUGE/LARGE/MEDIUM`), colors and the `extern` app declarations. |
-| `launcher.c/.h` | Home screen with a tile grid, a top bar with the Central time and a Wi-Fi icon, and app screens with a "< Home" button. **The app registry is `s_apps[]` in `launcher.c`.** |
+| `launcher.c/.h` | Home screen with a tile grid, a top bar with the Central time and a Wi-Fi icon, and app screens with a back button. Supports **folders** (a tile that opens a second grid; back from an app returns to its folder). **The app registry is `s_apps[]` in `launcher.c`; games are listed in `s_games[]` (the "Games" folder).** |
 | `net_time.c/.h` | Wi-Fi station connection, SNTP (pool.ntp.org), POSIX TZ strings, `LOCAL_TZ` (US Central). Exposes `net_time_wifi_configured/connected()`, `net_time_is_synced()` (true once the time is real, from either the RTC or the internet), `net_time_source()` and `net_time_last_sync()`. At boot it restores the time from the RTC; every SNTP sync (`sync_cb`) writes the time back to the RTC. |
 | `rtc.c/.h` | PCF85063 RTC (I2C 0x51, legacy driver, port 0). Stores **UTC**; `rtc_read_utc()` rejects the time if the chip's oscillator-stop flag is set or the date is implausible. |
 | `settings.c/.h` | NVS-backed user settings (12/24h, screen timeout, default weather city). |
 | `app_settings.c` | Settings app (tabs: Network, Display, Time, Weather, About). |
 | `game_common.c/.h` | Shared game code: 8x8 board widget (custom draw, tap -> row/col), background **worker task** (`game_worker_start/busy`, core 0, prio 1) for computer moves, modal dialog, level selector, buttons. |
 | `game_sys.h` | `game_time_us/random/worker_yield`: the only system calls the engines use, so they also compile on the PC. |
-| `game_pieces.c` | **Generated** by `tools/gen_game_pieces.py` (chess pieces + crown, TRUE_COLOR_ALPHA RGB565). Don't edit by hand. |
+| `game_images.c` | **Generated** by `tools/gen_game_images.py` (chess pieces, crown, Flappy bird frames; TRUE_COLOR_ALPHA RGB565). Don't edit by hand. |
 | `chess_engine.c/.h`, `app_chess.c` | Chess: full rules, alpha-beta search, 4 levels. Level saved as NVS key `chess_lvl`. |
 | `checkers_engine.c/.h`, `app_checkers.c` | American checkers, 4 levels. NVS key `checkers_lvl`. |
+| `app_flappy.c` | Flappy bird clone: time-based physics in a 16 ms `lv_timer`, pipes speed up and gaps narrow with the score. Best score in NVS key `flappy_best`. |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
 | `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. 12/24-hour comes from `settings_get_24h()`. |
 | `app_weather.c` | Weather: Open-Meteo over HTTPS (`esp_http_client` + `esp_crt_bundle`), downloads in a FreeRTOS task, cJSON parsing, icons drawn from LVGL shapes, 6 locations with Lee's Summit MO as the default (`s_locs[]`), 15-minute refresh. |
@@ -72,10 +73,11 @@ typedef struct {
     void (*destroy)(void);              // delete timers / reset state; launcher deletes the objects
     void (*draw_icon)(lv_obj_t *holder, int size); // optional custom tile icon
     bool pin_last;                       // true = always the last tile (Settings)
+    const struct app_s *const *folder;   // non-NULL = folder tile: NULL-terminated list of apps
 } app_t;
 ```
 
-To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `extern` line in `app_framework.h`, add `&x_app` to `s_apps[]` in `launcher.c`, and add the file to `SRCS` in `main/CMakeLists.txt`.
+To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `extern` line in `app_framework.h`, add `&x_app` to `s_apps[]` (or `s_games[]` for a game) in `launcher.c`, and add the file to `SRCS` in `main/CMakeLists.txt`.
 
 ### Rules learned the hard way
 
@@ -91,9 +93,9 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 
 ## Settings (done)
 
-- `settings.c/.h`: NVS-backed settings (namespace "settings", one u8 key each): `settings_get/set_24h`, `_screen_timeout_min`, `_weather_city`. `settings_init()` runs first in `launcher_start()` and initializes NVS unconditionally.
+- `settings.c/.h`: NVS-backed settings (namespace "settings", one u8 key each): `settings_get/set_24h`, `_screen_timeout_min`, `_weather_city`. Generic `settings_get/set_u8` and `settings_get/set_i32(key, default)` for apps' own values. `settings_init()` runs first in `launcher_start()` and initializes NVS unconditionally.
 - `app_settings.c`: tabview with Network, Display, Time, Weather and About tabs. It styles widgets dark by hand because the LVGL theme is light.
-- `app_t.pin_last = true` keeps a tile last: `build_home()` draws non-pinned apps first, then pinned ones.
+- `app_t.pin_last = true` keeps a tile last: `build_grid()` draws non-pinned apps first, then pinned ones.
 - The screen timeout lives in `launcher.c` (`screen_timeout_tick`). It turns the backlight off and puts a full-screen catcher on `lv_layer_top()` that swallows the waking tap.
 
 ## Games notes

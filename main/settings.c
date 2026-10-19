@@ -104,6 +104,33 @@ void settings_set_u8(const char *key, int value)
     }
 }
 
+int32_t settings_get_i32(const char *key, int32_t def)
+{
+    int32_t v = def;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_i32(h, key, &v);
+        nvs_close(h);
+    }
+    return v;
+}
+
+void settings_set_i32(const char *key, int32_t value)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_i32(h, key, value);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Saving %s failed: %s", key, esp_err_to_name(err));
+    }
+}
+
 int settings_get_weather_city(void) { return s_weather_city; }
 
 void settings_set_weather_city(int index)

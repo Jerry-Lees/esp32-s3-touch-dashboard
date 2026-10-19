@@ -4,7 +4,7 @@
  *   - an 8x8 board widget that draws itself and reports taps,
  *   - a background worker so the computer can think without freezing the UI,
  *   - a simple modal dialog and the side-panel controls,
- *   - the piece images from game_pieces.c.
+ *   - the piece images from game_images.c.
  *
  * Board coordinates: row 0..7 from the bottom (row 0 = rank 1 in chess),
  * col 0..7 from the left. Square index = row * 8 + col.
@@ -75,7 +75,7 @@ lv_obj_t *game_button(lv_obj_t *parent, const char *text, lv_coord_t w,
 lv_obj_t *game_level_selector(lv_obj_t *parent, int level, lv_event_cb_t cb);
 extern const char *const game_level_names[GAME_LEVELS];
 
-/* ---------- images (game_pieces.c) ---------- */
+/* ---------- images (game_images.c) ---------- */
 extern const lv_img_dsc_t img_chess_w_king, img_chess_w_queen, img_chess_w_rook,
                           img_chess_w_bishop, img_chess_w_knight, img_chess_w_pawn;
 extern const lv_img_dsc_t img_chess_b_king, img_chess_b_queen, img_chess_b_rook,
