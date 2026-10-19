@@ -34,6 +34,8 @@ typedef struct {
 /* ---- Registered apps ---- */
 extern const app_t world_clock_app;
 extern const app_t weather_app;
+extern const app_t chess_app;
+extern const app_t checkers_app;
 extern const app_t settings_app;
 
 /* Weather locations, so Settings can offer a default-city choice. */

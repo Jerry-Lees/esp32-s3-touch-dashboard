@@ -51,6 +51,11 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `rtc.c/.h` | PCF85063 RTC (I2C 0x51, legacy driver, port 0). Stores **UTC**; `rtc_read_utc()` rejects the time if the chip's oscillator-stop flag is set or the date is implausible. |
 | `settings.c/.h` | NVS-backed user settings (12/24h, screen timeout, default weather city). |
 | `app_settings.c` | Settings app (tabs: Network, Display, Time, Weather, About). |
+| `game_common.c/.h` | Shared game code: 8x8 board widget (custom draw, tap -> row/col), background **worker task** (`game_worker_start/busy`, core 0, prio 1) for computer moves, modal dialog, level selector, buttons. |
+| `game_sys.h` | `game_time_us/random/worker_yield`: the only system calls the engines use, so they also compile on the PC. |
+| `game_pieces.c` | **Generated** by `tools/gen_game_pieces.py` (chess pieces + crown, TRUE_COLOR_ALPHA RGB565). Don't edit by hand. |
+| `chess_engine.c/.h`, `app_chess.c` | Chess: full rules, alpha-beta search, 4 levels. Level saved as NVS key `chess_lvl`. |
+| `checkers_engine.c/.h`, `app_checkers.c` | American checkers, 4 levels. NVS key `checkers_lvl`. |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
 | `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. 12/24-hour comes from `settings_get_24h()`. |
 | `app_weather.c` | Weather: Open-Meteo over HTTPS (`esp_http_client` + `esp_crt_bundle`), downloads in a FreeRTOS task, cJSON parsing, icons drawn from LVGL shapes, 6 locations with Lee's Summit MO as the default (`s_locs[]`), 15-minute refresh. |
@@ -90,6 +95,12 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - `app_settings.c`: tabview with Network, Display, Time, Weather and About tabs. It styles widgets dark by hand because the LVGL theme is light.
 - `app_t.pin_last = true` keeps a tile last: `build_home()` draws non-pinned apps first, then pinned ones.
 - The screen timeout lives in `launcher.c` (`screen_timeout_tick`). It turns the backlight off and puts a full-screen catcher on `lv_layer_top()` that swallows the waking tap.
+
+## Games notes
+
+- Engines contain no LVGL and no ESP code (only `game_sys.h`), so they are tested on the PC: `gcc -O2 -I main -o /tmp/chess_test test/host/chess_test.c main/chess_engine.c && /tmp/chess_test` (same pattern for `checkers_test.c`). Perft must match; run these after any engine change. The checkers test plays Expert games, so it takes several minutes.
+- The computer move runs in the worker task. The app's `lv_timer` starts it, polls `game_worker_busy()` and applies the result. A generation counter (`s_gen`) discards stale results after Undo, New game or leaving the app. Searches must call `game_worker_yield()` regularly (via `check_stop`) or the core-0 idle watchdog fires.
+- Games keep their state in static memory (history in PSRAM), so leaving and reopening an app resumes the game. The state is lost on reboot.
 
 ## Workflow
 

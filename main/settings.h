@@ -21,3 +21,9 @@ void settings_set_screen_timeout_min(int minutes);
 /* Index into the Weather app's location list; 0 = Lee's Summit (default). */
 int  settings_get_weather_city(void);
 void settings_set_weather_city(int index);
+
+/* Small per-app values (0-255), e.g. a game's difficulty. Not cached:
+ * each call reads or writes flash, so don't call them every frame.
+ * Keys are at most 15 characters. */
+int  settings_get_u8(const char *key, int def);
+void settings_set_u8(const char *key, int value);

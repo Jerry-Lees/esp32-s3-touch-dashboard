@@ -84,6 +84,26 @@ void settings_set_screen_timeout_min(int minutes)
     }
 }
 
+int settings_get_u8(const char *key, int def)
+{
+    int v = def;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        v = load_u8(h, key, (uint8_t)def);
+        nvs_close(h);
+    }
+    return v;
+}
+
+void settings_set_u8(const char *key, int value)
+{
+    if (value < 0) value = 0;
+    if (value > 255) value = 255;
+    if (settings_get_u8(key, -1) != value) {
+        save_u8(key, (uint8_t)value);
+    }
+}
+
 int settings_get_weather_city(void) { return s_weather_city; }
 
 void settings_set_weather_city(int index)

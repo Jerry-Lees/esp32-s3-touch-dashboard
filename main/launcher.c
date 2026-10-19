@@ -25,6 +25,8 @@ esp_err_t wavesahre_rgb_lcd_bl_off(void);
 static const app_t *s_apps[] = {
     &world_clock_app,
     &weather_app,
+    &chess_app,
+    &checkers_app,
     &settings_app,
 };
 #define APP_COUNT (sizeof(s_apps) / sizeof(s_apps[0]))
