@@ -2,6 +2,7 @@
  * Shared board-game helpers. See game_common.h.
  */
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -357,4 +358,57 @@ lv_obj_t *game_level_selector(lv_obj_t *parent, int level, lv_event_cb_t cb)
                                 LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_add_event_cb(m, cb, LV_EVENT_VALUE_CHANGED, NULL);
     return m;
+}
+
+/* ======================= swipe input ======================= */
+
+#define SWIPE_PX 36
+
+static struct {
+    void      (*cb)(game_dir_t dir);
+    bool        repeat, fired;
+    lv_point_t  anchor;
+} s_swipe;
+
+static void swipe_event(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev || !s_swipe.cb) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    if (code == LV_EVENT_PRESSED) {
+        s_swipe.anchor = p;
+        s_swipe.fired = false;
+        return;
+    }
+    if (code == LV_EVENT_RELEASED) {
+        if (!s_swipe.fired) s_swipe.cb(GAME_DIR_TAP);
+        return;
+    }
+    if (s_swipe.fired && !s_swipe.repeat) return;
+
+    int dx = p.x - s_swipe.anchor.x, dy = p.y - s_swipe.anchor.y;
+    if (abs(dx) < SWIPE_PX && abs(dy) < SWIPE_PX) return;
+    game_dir_t dir = abs(dx) > abs(dy) ? (dx > 0 ? GAME_DIR_RIGHT : GAME_DIR_LEFT)
+                                       : (dy > 0 ? GAME_DIR_DOWN : GAME_DIR_UP);
+    s_swipe.anchor = p;
+    s_swipe.fired = true;
+    s_swipe.cb(dir);
+}
+
+lv_obj_t *game_swipe_layer(lv_obj_t *parent, bool repeat, void (*cb)(game_dir_t dir))
+{
+    s_swipe.cb = cb;
+    s_swipe.repeat = repeat;
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, LV_PCT(100), LV_PCT(100));
+    lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(o, swipe_event, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(o, swipe_event, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(o, swipe_event, LV_EVENT_RELEASED, NULL);
+    return o;
 }

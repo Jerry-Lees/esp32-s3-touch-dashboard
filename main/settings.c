@@ -15,6 +15,7 @@ static const char *NS  = "settings";
 static bool s_24h;
 static int  s_timeout_min;
 static int  s_weather_city;
+static bool s_show_fps;
 
 static uint8_t load_u8(nvs_handle_t h, const char *key, uint8_t def)
 {
@@ -54,6 +55,7 @@ void settings_init(void)
         s_24h          = load_u8(h, "clock24", 0) != 0;
         s_timeout_min  = load_u8(h, "scr_tmo", 0);
         s_weather_city = load_u8(h, "wx_city", 0);
+        s_show_fps     = load_u8(h, "show_fps", 0) != 0;
         nvs_close(h);
     }
     /* nvs_open fails on first boot (namespace not created yet): keep defaults. */
@@ -69,6 +71,16 @@ void settings_set_24h(bool on)
     if (on != s_24h) {
         s_24h = on;
         save_u8("clock24", on);
+    }
+}
+
+bool settings_get_show_fps(void) { return s_show_fps; }
+
+void settings_set_show_fps(bool on)
+{
+    if (on != s_show_fps) {
+        s_show_fps = on;
+        save_u8("show_fps", on);
     }
 }
 

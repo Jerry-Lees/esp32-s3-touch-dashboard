@@ -19,6 +19,10 @@ void settings_set_24h(bool on);
 int  settings_get_screen_timeout_min(void);
 void settings_set_screen_timeout_min(int minutes);
 
+/* Show LVGL's FPS / CPU meter in the bottom-right corner; default off. */
+bool settings_get_show_fps(void);
+void settings_set_show_fps(bool on);
+
 /* Index into the Weather app's location list; 0 = Lee's Summit (default). */
 int  settings_get_weather_city(void);
 void settings_set_weather_city(int index);

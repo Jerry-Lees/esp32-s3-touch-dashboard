@@ -28,6 +28,8 @@ static const app_t *const s_games[] = {
     &chess_app,
     &checkers_app,
     &flappy_app,
+    &snake_app,
+    &g2048_app,
     NULL,
 };
 
@@ -362,6 +364,36 @@ static void screen_timeout_tick(lv_timer_t *t)
     wavesahre_rgb_lcd_bl_off();
 }
 
+/* ---------- FPS meter ----------
+ * LVGL's perf monitor (enabled in menuconfig) is a label it creates on the
+ * system layer at the first screen refresh. It can't be turned off at run
+ * time, so we hide that label instead.
+ */
+
+void launcher_apply_fps(void)
+{
+    lv_obj_t *sys = lv_layer_sys();
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(sys); i++) {
+        lv_obj_t *o = lv_obj_get_child(sys, i);
+        if (lv_obj_check_type(o, &lv_label_class)) {
+            if (settings_get_show_fps()) {
+                lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+}
+
+/* Runs until the meter exists, then applies the setting once. */
+static void fps_init_tick(lv_timer_t *t)
+{
+    if (lv_obj_get_child_cnt(lv_layer_sys()) > 0) {
+        launcher_apply_fps();
+        lv_timer_del(t);
+    }
+}
+
 void launcher_start(void)
 {
     settings_init();   /* also initializes NVS, before Wi-Fi needs it */
@@ -369,4 +401,5 @@ void launcher_start(void)
     build_home();
     lv_scr_load(s_home_scr);
     lv_timer_create(screen_timeout_tick, 1000, NULL);
+    lv_timer_create(fps_init_tick, 5, NULL);
 }

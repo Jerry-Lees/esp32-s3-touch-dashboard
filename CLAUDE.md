@@ -49,14 +49,16 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `launcher.c/.h` | Home screen with a tile grid, a top bar with the Central time and a Wi-Fi icon, and app screens with a back button. Supports **folders** (a tile that opens a second grid; back from an app returns to its folder). **The app registry is `s_apps[]` in `launcher.c`; games are listed in `s_games[]` (the "Games" folder).** |
 | `net_time.c/.h` | Wi-Fi station connection, SNTP (pool.ntp.org), POSIX TZ strings, `LOCAL_TZ` (US Central). Exposes `net_time_wifi_configured/connected()`, `net_time_is_synced()` (true once the time is real, from either the RTC or the internet), `net_time_source()` and `net_time_last_sync()`. At boot it restores the time from the RTC; every SNTP sync (`sync_cb`) writes the time back to the RTC. |
 | `rtc.c/.h` | PCF85063 RTC (I2C 0x51, legacy driver, port 0). Stores **UTC**; `rtc_read_utc()` rejects the time if the chip's oscillator-stop flag is set or the date is implausible. |
-| `settings.c/.h` | NVS-backed user settings (12/24h, screen timeout, default weather city). |
+| `settings.c/.h` | NVS-backed user settings (12/24h, screen timeout, default weather city, show FPS meter). |
 | `app_settings.c` | Settings app (tabs: Network, Display, Time, Weather, About). |
-| `game_common.c/.h` | Shared game code: 8x8 board widget (custom draw, tap -> row/col), background **worker task** (`game_worker_start/busy`, core 0, prio 1) for computer moves, modal dialog, level selector, buttons. |
+| `game_common.c/.h` | Shared game code: 8x8 board widget (custom draw, tap -> row/col), background **worker task** (`game_worker_start/busy`, core 0, prio 1) for computer moves, modal dialog, level selector, buttons, and `game_swipe_layer()` (swipe/tap input for Snake and 2048). |
 | `game_sys.h` | `game_time_us/random/worker_yield`: the only system calls the engines use, so they also compile on the PC. |
 | `game_images.c` | **Generated** by `tools/gen_game_images.py` (chess pieces, crown, Flappy bird frames; TRUE_COLOR_ALPHA RGB565). Don't edit by hand. |
 | `chess_engine.c/.h`, `app_chess.c` | Chess: full rules, alpha-beta search, 4 levels. Level saved as NVS key `chess_lvl`. |
 | `checkers_engine.c/.h`, `app_checkers.c` | American checkers, 4 levels. NVS key `checkers_lvl`. |
 | `app_flappy.c` | Flappy bird clone: time-based physics in a 16 ms `lv_timer`, pipes speed up and gaps narrow with the score. Best score in NVS key `flappy_best`. |
+| `app_snake.c` | Snake: swipe to steer (finger can keep moving), custom-draw board that only invalidates changed cells, speeds up with the score. NVS key `snake_best`. |
+| `app_2048.c` | 2048: game state `M` survives closing the app; one LVGL object per tile, slide/pop animations with `lv_anim`. NVS key `2048_best`. |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
 | `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. 12/24-hour comes from `settings_get_24h()`. |
 | `app_weather.c` | Weather: Open-Meteo over HTTPS (`esp_http_client` + `esp_crt_bundle`), downloads in a FreeRTOS task, cJSON parsing, icons drawn from LVGL shapes, 6 locations with Lee's Summit MO as the default (`s_locs[]`), 15-minute refresh. |
@@ -83,6 +85,7 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 
 - **Thread safety:** LVGL calls may only run in the LVGL task, meaning LVGL event callbacks and `lv_timer` callbacks. `launcher_start()` is called while holding `lvgl_port_lock()`. Wi-Fi/IP events, SNTP and download tasks must **never** call LVGL; they set flags or results that an `lv_timer` polls (see `app_weather.c` `s_fetch_state` and the `__atomic` loads and stores).
 - When deleting the screen you're currently inside an event of, use `lv_obj_del_async`.
+- **Don't use `lv_anim_set_custom_exec_cb`** in LVGL 8: it overwrites the anim's `var` with the (stack) `lv_anim_t` itself, which crashed 2048. Use `lv_anim_set_var(obj)` + a normal `exec_cb(void *var, int32_t v)`.
 - Non-clickable decoration objects inside buttons must have `LV_OBJ_FLAG_CLICKABLE` cleared, or they swallow taps.
 - Built-in Montserrat fonts include ASCII, the degree sign (`"\xC2\xB0"`), the bullet and the `LV_SYMBOL_*` icons, but **no other non-ASCII characters**.
 - Fonts enabled in menuconfig: Montserrat 14 (default), 20, 28 and 48.
@@ -96,6 +99,7 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - `settings.c/.h`: NVS-backed settings (namespace "settings", one u8 key each): `settings_get/set_24h`, `_screen_timeout_min`, `_weather_city`. Generic `settings_get/set_u8` and `settings_get/set_i32(key, default)` for apps' own values. `settings_init()` runs first in `launcher_start()` and initializes NVS unconditionally.
 - `app_settings.c`: tabview with Network, Display, Time, Weather and About tabs. It styles widgets dark by hand because the LVGL theme is light.
 - `app_t.pin_last = true` keeps a tile last: `build_grid()` draws non-pinned apps first, then pinned ones.
+- **FPS meter:** `CONFIG_LV_USE_PERF_MONITOR` stays enabled; its label on `lv_layer_sys()` is hidden or shown by `launcher_apply_fps()` according to `settings_get_show_fps()` (key `show_fps`, default off; checkbox in Settings > Display).
 - The screen timeout lives in `launcher.c` (`screen_timeout_tick`). It turns the backlight off and puts a full-screen catcher on `lv_layer_top()` that swallows the waking tap.
 
 ## Games notes

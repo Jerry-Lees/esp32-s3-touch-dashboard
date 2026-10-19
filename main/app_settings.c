@@ -22,6 +22,7 @@
 
 #include "lvgl.h"
 #include "app_framework.h"
+#include "launcher.h"
 #include "net_time.h"
 #include "settings.h"
 
@@ -272,6 +273,12 @@ static void timeout_changed(lv_event_t *e)
     }
 }
 
+static void fps_changed(lv_event_t *e)
+{
+    settings_set_show_fps(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+    launcher_apply_fps();
+}
+
 static void clock_changed(lv_event_t *e)
 {
     uint16_t id = lv_btnmatrix_get_selected_btn(lv_event_get_target(e));
@@ -326,6 +333,31 @@ static void build_display_tab(lv_obj_t *tab)
                               "control, only on and off.)");
     lv_obj_set_width(note, LV_PCT(100));
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t *fp = mk_panel(tab);
+    lv_obj_t *cb = lv_checkbox_create(fp);
+    lv_checkbox_set_text(cb, "Show FPS / CPU meter");
+    lv_obj_set_style_text_font(cb, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(cb, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_set_style_pad_column(cb, 14, 0);
+    /* Bigger box, easier to hit with a finger. */
+    lv_obj_set_style_pad_all(cb, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(cb, lv_color_hex(C_BUTTON), LV_PART_INDICATOR);
+    lv_obj_set_style_border_color(cb, lv_color_hex(0x5F6B77), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(cb, lv_color_hex(C_ACCENT),
+                              LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_border_color(cb, lv_color_hex(C_ACCENT),
+                                  LV_PART_INDICATOR | LV_STATE_CHECKED);
+    if (settings_get_show_fps()) {
+        lv_obj_add_state(cb, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(cb, fps_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *fnote = mk_label(fp, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT,
+                               "Frames per second and how busy the drawing "
+                               "task is, shown in the bottom-right corner.");
+    lv_obj_set_width(fnote, LV_PCT(100));
+    lv_label_set_long_mode(fnote, LV_LABEL_LONG_WRAP);
 }
 
 static void build_time_tab(lv_obj_t *tab)

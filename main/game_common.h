@@ -75,6 +75,17 @@ lv_obj_t *game_button(lv_obj_t *parent, const char *text, lv_coord_t w,
 lv_obj_t *game_level_selector(lv_obj_t *parent, int level, lv_event_cb_t cb);
 extern const char *const game_level_names[GAME_LEVELS];
 
+/* ---------- swipe input (Snake, 2048) ---------- */
+
+typedef enum { GAME_DIR_UP, GAME_DIR_RIGHT, GAME_DIR_DOWN, GAME_DIR_LEFT,
+               GAME_DIR_TAP } game_dir_t;
+/* Invisible layer covering `parent` that turns finger movement into swipes.
+ * With `repeat`, a finger that keeps moving keeps steering (each ~36 px is
+ * another swipe); without it, one press gives at most one swipe. A press
+ * that doesn't move reports GAME_DIR_TAP on release. Create it before any
+ * buttons so they stay on top. Only one layer exists at a time. */
+lv_obj_t *game_swipe_layer(lv_obj_t *parent, bool repeat, void (*cb)(game_dir_t dir));
+
 /* ---------- images (game_images.c) ---------- */
 extern const lv_img_dsc_t img_chess_w_king, img_chess_w_queen, img_chess_w_rook,
                           img_chess_w_bishop, img_chess_w_knight, img_chess_w_pawn;
