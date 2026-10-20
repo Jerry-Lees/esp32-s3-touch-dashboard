@@ -201,7 +201,7 @@ static void worker_task(void *p)
     s_last_yield_us = esp_timer_get_time();
     s_job.fn(s_job.arg);
     __atomic_store_n(&s_busy, 0, __ATOMIC_RELEASE);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);           /* stack in PSRAM */
 }
 
 bool game_worker_start(void (*fn)(void *arg), void *arg)
@@ -213,8 +213,8 @@ bool game_worker_start(void (*fn)(void *arg), void *arg)
     s_job.arg = arg;
     __atomic_store_n(&s_busy, 1, __ATOMIC_RELEASE);
     /* Priority 1 (below LVGL's 2) on core 0, away from the LVGL task. */
-    if (xTaskCreatePinnedToCore(worker_task, "game_ai", 16 * 1024, NULL, 1,
-                                NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCoreWithCaps(worker_task, "game_ai", 16 * 1024, NULL, 1,
+                                        NULL, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Couldn't start the worker task");
         __atomic_store_n(&s_busy, 0, __ATOMIC_RELEASE);
         return false;

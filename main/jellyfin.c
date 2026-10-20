@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -58,7 +59,7 @@ static char              s_url[JF_URL_MAX];
 static char              s_key[JF_KEY_MAX];
 static uint32_t          s_cfg_ver;          /* +1 when the settings change */
 static bool              s_active;
-static jf_snapshot_t     s_snap;              /* PSRAM would be nicer, but it's ~3 KB */
+static jf_snapshot_t     s_snap EXT_RAM_BSS_ATTR;   /* ~5 KB, in PSRAM */
 
 /* Cover art: two buffers; the app shows `front`, the worker fills the other. */
 static uint16_t *s_art_buf[2];
@@ -473,7 +474,7 @@ static void poll_sessions(http_buf_t *hb)
         if (ver == s_cfg_ver) set_state(JF_ERROR, "The server's answer didn't make sense");
         return;
     }
-    static jf_session_t list[JF_SESSIONS];
+    static jf_session_t list[JF_SESSIONS] EXT_RAM_BSS_ATTR;
     int n = 0;
     const cJSON *ss;
     cJSON_ArrayForEach(ss, root) {
@@ -557,23 +558,41 @@ static void fetch_art(http_buf_t *hb)
     xSemaphoreGive(s_mx);
 }
 
+/* While the app is closed, give back the download buffer and cover art
+ * (about 0.6 MB of PSRAM); they're allocated again when it opens. */
+static void release_buffers(http_buf_t *hb)
+{
+    free(hb->buf);
+    hb->buf = NULL;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int i = 0; i < 2; i++) {
+        free(s_art_buf[i]);
+        s_art_buf[i] = NULL;
+        s_art_key[i][0] = '\0';
+    }
+    s_art_front = s_art_ready = -1;
+    s_art_want[0] = '\0';
+    xSemaphoreGive(s_mx);
+}
+
 static void worker(void *arg)
 {
     (void)arg;
     cJSON_Hooks hooks = { .malloc_fn = psram_malloc, .free_fn = free };
     cJSON_InitHooks(&hooks);
     http_buf_t hb = { .cap = BUF_CAP };
-    hb.buf = heap_caps_malloc(BUF_CAP + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int64_t next_poll = 0;
 
     for (;;) {
         bool active = __atomic_load_n(&s_active, __ATOMIC_ACQUIRE);
+        if (!active && hb.buf) release_buffers(&hb);
         msg_t m;
         if (xQueueReceive(s_q, &m, active ? pdMS_TO_TICKS(200) : portMAX_DELAY)) {
             if (m.type == M_WAKE) next_poll = 0;
         } else {
             m.type = M_WAKE;
         }
+        if (!hb.buf) hb.buf = heap_caps_malloc(BUF_CAP + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!hb.buf) continue;
         if (!jf_configured()) {
             set_state(JF_NOT_SET, "");
@@ -607,7 +626,7 @@ void jf_set_active(bool on)
         xSemaphoreTake(s_mx, portMAX_DELAY);
         s_snap.state = JF_CONNECTING;
         xSemaphoreGive(s_mx);
-        if (xTaskCreate(worker, "jellyfin", 8192, NULL, 4, NULL) != pdPASS) {
+        if (xTaskCreateWithCaps(worker, "jellyfin", 8192, NULL, 4, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
             ESP_LOGE(TAG, "Could not start the Jellyfin task");
         }
     }

@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_elf.h"
@@ -38,9 +39,9 @@ typedef struct {
 } entry_t;
 
 /* Shown list (LVGL task) and the scan's result (scan task -> LVGL task). */
-static entry_t  s_list[EXT_MAX_APPS];
+static entry_t  s_list[EXT_MAX_APPS] EXT_RAM_BSS_ATTR;   /* PSRAM */
 static int      s_n;
-static entry_t  s_scan[EXT_MAX_APPS];
+static entry_t  s_scan[EXT_MAX_APPS] EXT_RAM_BSS_ATTR;
 static int      s_scan_n;
 static bool     s_scan_ready, s_scanning, s_again;
 static uint32_t s_version;              /* +1 when the shown list changes */
@@ -144,7 +145,7 @@ static void scan_task(void *arg)
     s_scan_n = n;
     __atomic_store_n(&s_scan_ready, true, __ATOMIC_RELEASE);
     __atomic_store_n(&s_scanning, false, __ATOMIC_RELEASE);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);           /* stack in PSRAM */
 }
 
 void ext_apps_rescan(void)
@@ -159,7 +160,7 @@ void ext_apps_rescan(void)
     if (__atomic_load_n(&s_scan_ready, __ATOMIC_ACQUIRE)) {
         s_again = true;
         __atomic_store_n(&s_scanning, false, __ATOMIC_RELEASE);
-    } else if (xTaskCreate(scan_task, "ext_apps", 6144, NULL, 2, NULL) != pdPASS) {
+    } else if (xTaskCreateWithCaps(scan_task, "ext_apps", 6144, NULL, 2, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
         __atomic_store_n(&s_scanning, false, __ATOMIC_RELEASE);
     }
 }

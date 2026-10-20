@@ -21,6 +21,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -71,6 +72,12 @@ typedef struct {
 } result_t;
 
 static QueueHandle_t s_jobs, s_results;
+/* The frame buffers (2.3 MB) are freed a few seconds after the view closes
+ * and allocated again when it opens. The worker holds s_fb_mx while it
+ * decodes into one, and skips decodes for a view that's gone (s_live_gen),
+ * so a buffer is never freed under it. */
+static SemaphoreHandle_t s_fb_mx;
+static int               s_live_gen;       /* __atomic copy of V.gen */
 static char (*s_files)[PATH_LEN];  /* PSRAM; written by the worker during a scan */
 
 /* ---------- picture list ---------- */
@@ -424,12 +431,19 @@ static void worker(void *arg)
             if (!r.ok) ESP_LOGW(TAG, "couldn't delete %s", s_files[j.file]);
         } else {
             int64_t t0 = esp_log_timestamp();
-            r.ok = photo_decode_file(s_files[j.file], j.buf, j.w, j.h, j.fill, r.err);
-            if (r.ok) {
-                ESP_LOGI(TAG, "%s in %d ms", s_files[j.file], (int)(esp_log_timestamp() - t0));
+            xSemaphoreTake(s_fb_mx, portMAX_DELAY);
+            if (j.gen != __atomic_load_n(&s_live_gen, __ATOMIC_ACQUIRE)) {
+                r.ok = false;                      /* view gone: its buffer may be too */
+                strcpy(r.err, "cancelled");
             } else {
-                ESP_LOGW(TAG, "%s: %s", s_files[j.file], r.err);
+                r.ok = photo_decode_file(s_files[j.file], j.buf, j.w, j.h, j.fill, r.err);
+                if (r.ok) {
+                    ESP_LOGI(TAG, "%s in %d ms", s_files[j.file], (int)(esp_log_timestamp() - t0));
+                } else {
+                    ESP_LOGW(TAG, "%s: %s", s_files[j.file], r.err);
+                }
             }
+            xSemaphoreGive(s_fb_mx);
         }
         xQueueSend(s_results, &r, portMAX_DELAY);
     }
@@ -635,8 +649,29 @@ static void tick(lv_timer_t *t)
     if (due && V.ready_fb >= 0) show_ready();
 }
 
-/* Frame buffers for the largest view (full screen), allocated on first use. */
-static uint16_t *s_fb[3];
+/* Frame buffers for the largest view (full screen). */
+static uint16_t   *s_fb[3];
+static lv_timer_t *s_release;
+
+static void set_gen(int gen)
+{
+    V.gen = gen;
+    __atomic_store_n(&s_live_gen, gen, __ATOMIC_RELEASE);
+}
+
+/* A few seconds after closing: free the frame buffers once no decode runs. */
+static void release_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (V.view || xSemaphoreTake(s_fb_mx, 0) != pdTRUE) return;    /* try again later */
+    for (int i = 0; i < 3; i++) {
+        free(s_fb[i]);
+        s_fb[i] = NULL;
+    }
+    xSemaphoreGive(s_fb_mx);
+    lv_timer_del(s_release);
+    s_release = NULL;
+}
 
 lv_obj_t *photo_frame_open(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
 {
@@ -644,13 +679,18 @@ lv_obj_t *photo_frame_open(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
     if (!s_jobs) {
         s_files = heap_caps_calloc(MAX_FILES, PATH_LEN, MALLOC_CAP_SPIRAM);
         s_order = heap_caps_calloc(MAX_FILES, sizeof(int), MALLOC_CAP_SPIRAM);
+        s_fb_mx = xSemaphoreCreateMutex();
         s_jobs = xQueueCreate(4, sizeof(job_t));
         s_results = xQueueCreate(4, sizeof(result_t));
-        xTaskCreate(worker, "photos", 8192, NULL, 2, NULL);
+        xTaskCreateWithCaps(worker, "photos", 8192, NULL, 2, NULL, MALLOC_CAP_SPIRAM);
+    }
+    if (s_release) {                          /* still have the buffers */
+        lv_timer_del(s_release);
+        s_release = NULL;
     }
     int gen = V.gen + 1;
     memset(&V, 0, sizeof(V));
-    V.gen = gen;
+    set_gen(gen);
     V.w = w;
     V.h = h;
     V.img_fb[0] = V.img_fb[1] = V.busy_fb = V.ready_fb = V.want = V.ready_pos = -1;
@@ -706,8 +746,9 @@ void photo_frame_close(void)
      * result is dropped by the generation check. */
     int gen = V.gen + 1;
     memset(&V, 0, sizeof(V));               /* the caller deletes the objects */
-    V.gen = gen;
+    set_gen(gen);
     V.busy_fb = -1;
+    if (!s_release) s_release = lv_timer_create(release_cb, 5000, NULL);
 }
 
 void photo_frame_step(int dir)
@@ -739,7 +780,7 @@ bool photo_frame_delete_current(void)
     /* Drop anything decoded or decoding (positions have moved): bumping the
      * generation ignores the result. The worker runs jobs in order, so a
      * buffer it's still writing is done before it's used again. */
-    V.gen++;
+    set_gen(V.gen + 1);
     V.busy_fb = V.ready_fb = V.ready_pos = V.want = -1;
     V.fails = 0;
     V.deleted = true;

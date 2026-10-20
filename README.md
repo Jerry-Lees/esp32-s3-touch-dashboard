@@ -454,6 +454,7 @@ $PY tools/sdcard.py get screenshots ./shots      # card -> PC (one file or a who
 $PY tools/sdcard.py rm pictures/old.jpg          # a file or an empty folder
 $PY tools/sdcard.py mkdir pictures/holiday
 $PY tools/sdcard.py shot                         # take a screenshot now
+$PY tools/sdcard.py mem                          # memory report (RAM, PSRAM, task stacks)
 ```
 
 - `shot` takes a screenshot without touching the screen, for screens whose top bar can't be

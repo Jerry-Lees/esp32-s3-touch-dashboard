@@ -80,6 +80,24 @@ static entry_t     *s_ent, *s_ent_new;          /* shown list / list being read 
 static uint16_t    *s_img;                      /* VIEW_W * VIEW_H RGB565 */
 static char        *s_text;                     /* TEXT_BUF */
 static int          s_gen;
+static lv_timer_t  *s_release;                  /* frees the buffers after closing */
+
+/* The buffers (about 1.3 MB) are only kept while the app is open: freed once
+ * the worker has finished any job it was running. */
+static void release_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (__atomic_load_n(&s_busy, __ATOMIC_ACQUIRE)) return;     /* try again later */
+    free(s_ent);
+    free(s_ent_new);
+    free(s_img);
+    free(s_text);
+    s_ent = s_ent_new = NULL;
+    s_img = NULL;
+    s_text = NULL;
+    lv_timer_del(s_release);
+    s_release = NULL;
+}
 
 static void set_err(const char *msg) { strlcpy(J.err, msg, sizeof(J.err)); }
 
@@ -1102,18 +1120,22 @@ static void files_create(lv_obj_t *parent)
         lv_obj_center(l);
         return;
     }
-    if (!s_task) {
-        s_ent = heap_caps_calloc(MAX_ENTRIES, sizeof(entry_t), MALLOC_CAP_SPIRAM);
-        s_ent_new = heap_caps_calloc(MAX_ENTRIES, sizeof(entry_t), MALLOC_CAP_SPIRAM);
-        s_img = heap_caps_malloc(VIEW_W * VIEW_H * 2, MALLOC_CAP_SPIRAM);
-        s_text = heap_caps_malloc(TEXT_BUF, MALLOC_CAP_SPIRAM);
-        if (!s_ent || !s_ent_new || !s_img || !s_text ||
-            xTaskCreate(worker, "files", 8192, NULL, 2, &s_task) != pdPASS) {
-            s_task = NULL;
-            lv_obj_center(mk_label(parent, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT,
-                                   "Not enough memory for the file manager."));
-            return;
-        }
+    if (s_release) {                             /* closed only briefly: keep them */
+        lv_timer_del(s_release);
+        s_release = NULL;
+    }
+    if (!s_ent) s_ent = heap_caps_calloc(MAX_ENTRIES, sizeof(entry_t), MALLOC_CAP_SPIRAM);
+    if (!s_ent_new) s_ent_new = heap_caps_calloc(MAX_ENTRIES, sizeof(entry_t), MALLOC_CAP_SPIRAM);
+    if (!s_img) s_img = heap_caps_malloc(VIEW_W * VIEW_H * 2, MALLOC_CAP_SPIRAM);
+    if (!s_text) s_text = heap_caps_malloc(TEXT_BUF, MALLOC_CAP_SPIRAM);
+    if (!s_ent || !s_ent_new || !s_img || !s_text ||
+        (!s_task &&
+         xTaskCreateWithCaps(worker, "files", 8192, NULL, 2, &s_task, MALLOC_CAP_SPIRAM) != pdPASS)) {
+        s_task = NULL;
+        lv_obj_center(mk_label(parent, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT,
+                               "Not enough memory for the file manager."));
+        s_release = lv_timer_create(release_cb, 500, NULL);   /* give back what we got */
+        return;
     }
     U.dsc = (lv_img_dsc_t){ .header.cf = LV_IMG_CF_TRUE_COLOR, .header.w = VIEW_W,
                             .header.h = VIEW_H, .data_size = VIEW_W * VIEW_H * 2,
@@ -1170,6 +1192,7 @@ static void files_destroy(void)
     if (U.timer) lv_timer_del(U.timer);
     s_gen++;                                     /* a running job's result is dropped */
     memset(&U, 0, sizeof(U));                    /* the launcher deletes the objects */
+    if (!s_release) s_release = lv_timer_create(release_cb, 500, NULL);
 }
 
 const app_t files_app = {

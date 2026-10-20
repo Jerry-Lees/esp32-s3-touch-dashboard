@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_crt_bundle.h"
@@ -78,7 +79,7 @@ typedef struct {
     char sunrise[12], sunset[12];
 } wx_data_t;
 
-static wx_data_t s_cache[LOC_COUNT];
+static wx_data_t s_cache[LOC_COUNT] EXT_RAM_BSS_ATTR;   /* PSRAM */
 static bool      s_error[LOC_COUNT];
 static int64_t   s_last_attempt_us[LOC_COUNT];
 static int       s_sel = 0;    /* set to the Settings default on each open */
@@ -437,7 +438,7 @@ static void fetch_task(void *arg)
     s_fetch_loc = loc;
     s_fetch_ok = ok;
     __atomic_store_n(&s_fetch_state, FETCH_DONE, __ATOMIC_RELEASE);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);           /* stack in PSRAM */
 }
 
 static void start_fetch(int loc)
@@ -447,7 +448,7 @@ static void start_fetch(int loc)
     }
     s_last_attempt_us[loc] = esp_timer_get_time();
     __atomic_store_n(&s_fetch_state, FETCH_BUSY, __ATOMIC_RELEASE);
-    if (xTaskCreate(fetch_task, "wx_fetch", 10240, (void *)(intptr_t)loc, 5, NULL) != pdPASS) {
+    if (xTaskCreateWithCaps(fetch_task, "wx_fetch", 10240, (void *)(intptr_t)loc, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Could not start download task");
         __atomic_store_n(&s_fetch_state, FETCH_IDLE, __ATOMIC_RELEASE);
     }

@@ -15,6 +15,7 @@
  *   @@sd d <seq> <crc> <base64>  (each)   @@ack <seq> / @@nak <seq>, then @@ok done
  *   @@sd rm <path> / @@sd mkdir <path>    @@ok rm / @@ok mkdir
  *   @@sd shot                             @@ok shot (a screenshot is taken)
+ *   @@sd mem                              @@m <text> lines, then @@ok mem (memory report)
  *   errors: @@err <message>
  *
  * Paths and names are percent-encoded (spaces, %, non-ASCII) and relative
@@ -39,6 +40,7 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "ff.h"
 #include "mbedtls/base64.h"
 
@@ -420,6 +422,37 @@ static void cmd_mkdir(const char *arg)
     out("@@ok mkdir\n");
 }
 
+/* Memory report: internal RAM / PSRAM now, at their lowest since start-up
+ * and the largest free block, then each task's stack size and peak use. */
+static void cmd_mem(void)
+{
+    static const struct { const char *name; uint32_t caps; } kinds[] = {
+        { "internal", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT },
+        { "psram", MALLOC_CAP_SPIRAM },
+    };
+    for (int i = 0; i < 2; i++) {
+        out("@@m %-8s free %7u  lowest %7u  largest block %7u  total %7u\n", kinds[i].name,
+            (unsigned)heap_caps_get_free_size(kinds[i].caps),
+            (unsigned)heap_caps_get_minimum_free_size(kinds[i].caps),
+            (unsigned)heap_caps_get_largest_free_block(kinds[i].caps),
+            (unsigned)heap_caps_get_total_size(kinds[i].caps));
+    }
+    UBaseType_t n = uxTaskGetNumberOfTasks() + 4;
+    TaskStatus_t *st = heap_caps_malloc(n * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM);
+    if (st) {
+        n = uxTaskGetSystemState(st, n, NULL);
+        for (UBaseType_t i = 0; i < n; i++) {
+            /* "unused" = bytes of stack never touched (the high-water mark) */
+            const void *base = pxTaskGetStackStart(st[i].xHandle);
+            out("@@m task %-16s prio %2u  stack unused %6u  stack in %s\n", st[i].pcTaskName,
+                (unsigned)st[i].uxCurrentPriority, (unsigned)st[i].usStackHighWaterMark,
+                esp_ptr_external_ram(base) ? "PSRAM" : "internal");
+        }
+        free(st);
+    }
+    out("@@ok mem\n");
+}
+
 static void task(void *arg)
 {
     (void)arg;
@@ -431,6 +464,8 @@ static void task(void *arg)
         bool card = sd_card_mounted();
         if (!strncmp(c, "hello", 5)) {
             out("@@ok hello 1 %d\n", card);
+        } else if (!strcmp(c, "mem")) {
+            cmd_mem();
         } else if (!strcmp(c, "shot")) {
             screenshot_request();
             out("@@ok shot\n");
@@ -468,5 +503,5 @@ void usb_files_start(void)
     }
     usb_serial_jtag_vfs_use_driver();      /* logs and printf now go through the driver too */
     crc_init();
-    xTaskCreate(task, "usb_files", 8192, NULL, 2, NULL);
+    xTaskCreateWithCaps(task, "usb_files", 8192, NULL, 2, NULL, MALLOC_CAP_SPIRAM);
 }

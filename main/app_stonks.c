@@ -470,7 +470,7 @@ static void worker_init(void)
     if (s_jobs) return;
     s_jobs = xQueueCreate(MAX_SYMS + 8, sizeof(job_t));
     s_results = xQueueCreate(MAX_SYMS + 8, sizeof(quote_t *));
-    if (xTaskCreate(worker_task, "stonks", 10240, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreateWithCaps(worker_task, "stonks", 10240, NULL, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "Could not start download task");
     }
 }

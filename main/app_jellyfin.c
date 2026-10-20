@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "app_framework.h"
@@ -45,7 +46,7 @@ static struct {
     int64_t     want_until_us;
     /* setup page */
     lv_obj_t   *setup, *ta_url, *ta_key, *kb;
-} U;
+} U EXT_RAM_BSS_ATTR;                       /* PSRAM: keeps internal RAM free */
 
 /* ---------- helpers ---------- */
 
