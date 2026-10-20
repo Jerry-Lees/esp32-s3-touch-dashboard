@@ -174,7 +174,7 @@ startup). It creates one folder, `dashboard`, and never touches anything else on
 |---|---|
 | `dashboard/import/` | One-time inbox. Files here are read at startup, applied, then **erased**. |
 | `dashboard/pictures/` | Photos (for a future photo frame). |
-| `dashboard/screenshots/` | Screenshots (coming soon). |
+| `dashboard/screenshots/` | Screenshots: long-press the top bar on any screen (see [Taking screenshots](#taking-screenshots)). |
 | `dashboard/backup/` | Settings backups (never include Wi-Fi passwords). |
 | `dashboard/apps/` | Reserved for apps loaded from the card. |
 
@@ -186,7 +186,12 @@ The display can remember up to **10 Wi-Fi networks** and connects to the **stron
 so it can move between home, work and a phone hotspot. (2.4 GHz networks only; hidden networks
 aren't supported.) A network set in `main/wifi_secrets.h` is also used, as a built-in extra.
 
-**To add networks:**
+**To add a network on the display:** **Settings > Network > Add network**. The display scans and
+lists the networks in range (strongest first). Tap one, type its password with the on-screen
+keyboard (tick **Show** to check what you typed) and tap **Save**. Open networks just need a
+confirmation. Enterprise (work login) and WEP networks aren't supported.
+
+**To add several at once from the SD card:**
 
 1. With the card in your PC, create a plain text file named **`wifi.json`** in the
    `dashboard/import/` folder (insert the card in the display once first, so the folder exists).
@@ -237,9 +242,13 @@ isn't encrypted, so treat the device itself like anything else that knows your W
 
 ## Taking screenshots
 
-Long-press an empty part of the top bar on any screen: the device sends that screen over the USB
-serial port (it pauses for a few seconds meanwhile). On the PC, run the receiver, which saves each
-one as a PNG in `docs/screenshots/`:
+Long-press an empty part of the top bar on any screen (the display pauses for a few seconds).
+
+- **With an SD card in:** the screen is saved as a BMP image in `dashboard/screenshots/`, named
+  after the date and time (for example `shot_20261019_213005.bmp`), and a message shows the name.
+  Any image viewer opens BMP files.
+- **Without a card:** the screen is sent over the USB cable instead. On the PC, run the receiver,
+  which saves each one as a PNG in `docs/screenshots/`:
 
 ```bash
 ~/.espressif/python_env/idf5.5_py3.14_env/bin/python tools/screenshot.py

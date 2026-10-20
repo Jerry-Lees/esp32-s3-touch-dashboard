@@ -88,7 +88,7 @@ static const char README_TXT[] =
     "              It is overwritten with blanks and deleted after import, so\r\n"
     "              passwords don't stay on the card.\r\n"
     "pictures\\     Photos (for a future photo frame).\r\n"
-    "screenshots\\  Screenshots (coming soon).\r\n"
+    "screenshots\\  Screenshots: long-press the top bar on any screen.\r\n"
     "backup\\       Settings backups (never include Wi-Fi passwords).\r\n"
     "apps\\         Reserved for apps loaded from the card.\r\n";
 

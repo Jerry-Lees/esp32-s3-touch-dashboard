@@ -1,6 +1,10 @@
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
+
+#include "esp_wifi_types.h"
+#include "wifi_list.h"
 
 /* POSIX time-zone rules (daylight saving handled automatically). */
 #define TZ_US_CENTRAL "CST6CDT,M3.2.0,M11.1.0"
@@ -21,6 +25,18 @@ void net_time_start(void);
 /* Call after adding or removing saved networks (any task): connects if
  * not connected yet, and drops the connection if its network was removed. */
 void net_time_networks_changed(void);
+
+/* Scan for Settings' "Add network": request one, then poll the results
+ * (any task). Results: one entry per network name, strongest first;
+ * net_time_scan_results returns -1 until the scan has finished. */
+#define NET_SCAN_MAX 20
+typedef struct {
+    char             ssid[WIFI_SSID_MAX + 1];
+    int8_t           rssi;
+    wifi_auth_mode_t auth;
+} net_scan_ap_t;
+void net_time_scan_request(void);
+int  net_time_scan_results(net_scan_ap_t *out, int max);
 
 /* The network name from wifi_secrets.h, or NULL if it isn't set. */
 const char *net_time_builtin_ssid(void);

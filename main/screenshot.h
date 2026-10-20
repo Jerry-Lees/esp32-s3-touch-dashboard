@@ -1,8 +1,9 @@
 #pragma once
 /*
- * Screenshots for the README: long-press `obj` (the launcher's top bars) and
- * the current screen is sent over the USB serial console as base64 text.
- * tools/screenshot.py on the PC turns it back into PNG files. LVGL task only.
+ * Screenshots: long-press `obj` (the launcher's top bars). With an SD card
+ * in, the screen is saved as dashboard/screenshots/shot_<date_time>.bmp;
+ * without one, it's sent over the USB serial console as base64 text, which
+ * tools/screenshot.py on the PC turns into PNG files. LVGL task only.
  */
 #include "lvgl.h"
 

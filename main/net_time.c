@@ -70,11 +70,13 @@ static void restore_from_rtc(void)
  * wifi_secrets.h. Everything below runs in the default event loop task, one
  * event at a time: other tasks ask for a (re)connect by posting NET_KICK
  * (net_time_networks_changed), and retries come from an esp_timer that
- * posts the same event.
+ * posts the same event. Settings' "Add network" asks for a scan with
+ * NET_UI_SCAN; that scan waits until we're not connecting, and its results
+ * go to s_ui_aps instead of picking a network.
  */
 
 ESP_EVENT_DEFINE_BASE(NET_EVENT);
-enum { NET_KICK };
+enum { NET_KICK, NET_UI_SCAN };
 
 #define MAX_SCAN 20
 
@@ -83,6 +85,10 @@ static bool    s_scanning, s_connecting;            /* event task only */
 static char    s_cur_ssid[WIFI_SSID_MAX + 1];       /* event task only */
 static int     s_retry_ms = 2000;
 static esp_timer_handle_t s_retry_timer;
+static bool    s_ui_pending, s_ui_scan;              /* event task only */
+static net_scan_ap_t s_ui_aps[NET_SCAN_MAX];         /* written while !s_ui_ready */
+static int     s_ui_count;
+static bool    s_ui_ready;                           /* __atomic */
 
 static bool builtin_ok(void)
 {
@@ -122,6 +128,60 @@ static void start_scan(void)
     }
 }
 
+/* Starts the scan Settings asked for, once the radio isn't busy. */
+static void try_ui_scan(void)
+{
+    if (!s_ui_pending || s_scanning || s_connecting) return;
+    if (esp_wifi_scan_start(NULL, false) == ESP_OK) {
+        s_ui_pending = false;
+        s_ui_scan = s_scanning = true;
+    } else {
+        retry_later(1000);
+    }
+}
+
+/* Settings' scan: every visible network, strongest first, one per name. */
+static void ui_scan_done(void)
+{
+    s_ui_scan = s_scanning = false;
+    uint16_t n = MAX_SCAN;
+    wifi_ap_record_t *aps = calloc(MAX_SCAN, sizeof(*aps));
+    s_ui_count = 0;
+    if (aps && esp_wifi_scan_get_ap_records(&n, aps) == ESP_OK) {
+        for (int i = 0; i < n; i++) {
+            const char *ssid = (const char *)aps[i].ssid;
+            if (!ssid[0]) continue;                   /* hidden network */
+            int j = 0;
+            while (j < s_ui_count && strcmp(s_ui_aps[j].ssid, ssid) != 0) j++;
+            if (j == s_ui_count) {
+                if (s_ui_count == NET_SCAN_MAX) continue;
+                s_ui_count++;
+                strlcpy(s_ui_aps[j].ssid, ssid, sizeof(s_ui_aps[j].ssid));
+                s_ui_aps[j].rssi = -127;
+            }
+            if (aps[i].rssi > s_ui_aps[j].rssi) {
+                s_ui_aps[j].rssi = aps[i].rssi;
+                s_ui_aps[j].auth = aps[i].authmode;
+            }
+        }
+        /* Strongest first (a handful of entries: insertion sort). */
+        for (int i = 1; i < s_ui_count; i++) {
+            net_scan_ap_t a = s_ui_aps[i];
+            int j = i - 1;
+            while (j >= 0 && s_ui_aps[j].rssi < a.rssi) {
+                s_ui_aps[j + 1] = s_ui_aps[j];
+                j--;
+            }
+            s_ui_aps[j + 1] = a;
+        }
+    } else {
+        esp_wifi_clear_ap_list();
+    }
+    free(aps);
+    __atomic_store_n(&s_ui_ready, true, __ATOMIC_RELEASE);
+    start_scan();                                     /* carry on connecting if needed */
+}
+
 /* Picks the strongest known network from the scan and connects to it. */
 static void scan_done(void)
 {
@@ -145,6 +205,7 @@ static void scan_done(void)
         free(aps);
         ESP_LOGI(TAG, "No known Wi-Fi network in range; trying again in 15 s");
         retry_later(15000);
+        try_ui_scan();
         return;
     }
 
@@ -178,7 +239,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         start_scan();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
-        scan_done();
+        if (s_ui_scan) ui_scan_done();
+        else scan_done();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *ev = data;
         bool was = s_connected;
@@ -195,6 +257,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_connected = true;
         s_connecting = false;
         s_retry_ms = 2000;
+        try_ui_scan();
     } else if (base == NET_EVENT && id == NET_KICK) {
         /* A removed network must stop being used straight away. */
         if ((s_connected || s_connecting) && !is_known(s_cur_ssid)) {
@@ -202,7 +265,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             esp_wifi_disconnect();
             return;
         }
+        try_ui_scan();
         start_scan();
+    } else if (base == NET_EVENT && id == NET_UI_SCAN) {
+        s_ui_pending = true;
+        try_ui_scan();
     }
 }
 
@@ -236,7 +303,7 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        NET_EVENT, NET_KICK, wifi_event_handler, NULL, NULL));
+        NET_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL, NULL));
 
     const esp_timer_create_args_t targs = { .callback = retry_cb, .name = "wifi_retry" };
     ESP_ERROR_CHECK(esp_timer_create(&targs, &s_retry_timer));
@@ -278,6 +345,21 @@ void net_time_start(void)
 void net_time_networks_changed(void)
 {
     if (s_wifi_started) kick();
+}
+
+void net_time_scan_request(void)
+{
+    if (!s_wifi_started) return;
+    __atomic_store_n(&s_ui_ready, false, __ATOMIC_RELEASE);
+    esp_event_post(NET_EVENT, NET_UI_SCAN, NULL, 0, 0);
+}
+
+int net_time_scan_results(net_scan_ap_t *out, int max)
+{
+    if (!__atomic_load_n(&s_ui_ready, __ATOMIC_ACQUIRE)) return -1;
+    int n = s_ui_count < max ? s_ui_count : max;
+    memcpy(out, s_ui_aps, sizeof(*out) * n);
+    return n;
 }
 
 const char *net_time_builtin_ssid(void)

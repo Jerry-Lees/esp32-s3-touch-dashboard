@@ -506,6 +506,278 @@ static void rebuild_net_list(void)
     }
 }
 
+/* ---------- adding a network on screen ----------
+ * A full-screen overlay over the Settings app with two pages: a scan list
+ * (tap a network), then the password with the on-screen keyboard.
+ */
+
+static struct {
+    lv_obj_t   *view, *pick, *pass;          /* overlay and its two pages */
+    lv_obj_t   *status, *list;               /* pick page */
+    lv_obj_t   *title, *ta, *msg, *kb;       /* password page */
+    lv_timer_t *poll;
+    net_scan_ap_t aps[NET_SCAN_MAX];
+    int         n;
+    int         chosen;                      /* index into aps */
+} add;
+
+static const char *auth_word(wifi_auth_mode_t a)
+{
+    switch (a) {
+    case WIFI_AUTH_OPEN:            return "Open";
+    case WIFI_AUTH_WEP:             return "WEP (not supported)";
+    case WIFI_AUTH_WPA2_ENTERPRISE:
+    case WIFI_AUTH_WPA3_ENTERPRISE:
+    case WIFI_AUTH_WPA2_WPA3_ENTERPRISE: return "Enterprise (not supported)";
+    default:                        return "Secured";
+    }
+}
+
+static bool auth_supported(wifi_auth_mode_t a)
+{
+    return strstr(auth_word(a), "not supported") == NULL;
+}
+
+static void add_close(void)
+{
+    if (add.poll) lv_timer_del(add.poll);
+    if (add.ta) lv_textarea_set_text(add.ta, "");
+    if (add.view) lv_obj_del_async(add.view);   /* we may be inside its event */
+    memset(&add, 0, sizeof(add));
+}
+
+static void add_cancel_clicked(lv_event_t *e)
+{
+    (void)e;
+    add_close();
+}
+
+static void add_show_pick(void)
+{
+    lv_obj_clear_flag(add.pick, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(add.pass, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_text(add.ta, "");
+}
+
+static void add_save(void)
+{
+    const net_scan_ap_t *ap = &add.aps[add.chosen];
+    bool open = ap->auth == WIFI_AUTH_OPEN;
+    const char *pw = open ? "" : lv_textarea_get_text(add.ta);
+    size_t len = strlen(pw);
+    if (!open && !(len >= 8 && len <= 63)) {
+        lv_label_set_text(add.msg, "The password must be 8 to 63 characters.");
+        return;
+    }
+    if (!wifi_list_contains(ap->ssid) && wifi_list_count() >= WIFI_LIST_MAX) {
+        lv_label_set_text_fmt(add.msg, "You already have %d saved networks. Remove one "
+                              "first.", WIFI_LIST_MAX);
+        return;
+    }
+    wifi_net_t net = {0};
+    strlcpy(net.ssid, ap->ssid, sizeof(net.ssid));
+    strlcpy(net.pass, pw, sizeof(net.pass));
+    bool ok = wifi_list_add(&net, 1);
+    memset(&net, 0, sizeof(net));
+    if (!ok) {
+        lv_label_set_text(add.msg, "Saving failed. Try again.");
+        return;
+    }
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Saved \"%s\"", ap->ssid);
+    net_time_networks_changed();             /* connect if we aren't yet */
+    add_close();
+    launcher_toast(msg, 4000);
+    rebuild_net_list();
+}
+
+static void add_save_clicked(lv_event_t *e)
+{
+    (void)e;
+    add_save();
+}
+
+static void add_back_clicked(lv_event_t *e)
+{
+    (void)e;
+    add_show_pick();
+}
+
+static void add_kb_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_READY) add_save();
+    else add_show_pick();
+}
+
+static void add_show_clicked(lv_event_t *e)
+{
+    lv_textarea_set_password_mode(add.ta, !is_checked(e));
+}
+
+static void add_ap_clicked(lv_event_t *e)
+{
+    add.chosen = (int)(intptr_t)lv_event_get_user_data(e);
+    const net_scan_ap_t *ap = &add.aps[add.chosen];
+    bool open = ap->auth == WIFI_AUTH_OPEN;
+    lv_label_set_text_fmt(add.title, open ? "Save the open network \"%s\"?"
+                                          : "Password for \"%s\"", ap->ssid);
+    lv_label_set_text(add.msg, open ? "This network has no password. Anyone nearby can "
+                                      "see what's sent over it." : "");
+    if (open) {
+        lv_obj_add_flag(add.ta, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(add.kb, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(add.ta, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(add.kb, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_add_flag(add.pick, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(add.pass, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void add_fill_list(void)
+{
+    lv_obj_clean(add.list);
+    if (add.n == 0) {
+        lv_label_set_text(add.status, "No networks found. Tap Rescan to try again.");
+        return;
+    }
+    lv_label_set_text(add.status, "Tap a network to add it (2.4 GHz networks only):");
+    for (int i = 0; i < add.n; i++) {
+        const net_scan_ap_t *ap = &add.aps[i];
+        bool ok = auth_supported(ap->auth);
+        lv_obj_t *r = lv_btn_create(add.list);
+        lv_obj_set_size(r, LV_PCT(100), 56);
+        lv_obj_set_style_radius(r, 10, 0);
+        lv_obj_set_style_bg_color(r, lv_color_hex(0x232D36), 0);
+        lv_obj_set_style_shadow_width(r, 0, 0);
+        if (ok) lv_obj_add_event_cb(r, add_ap_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        else lv_obj_add_state(r, LV_STATE_DISABLED);
+
+        lv_obj_t *n = mk_label(r, APP_FONT_MEDIUM, ok ? APP_COLOR_TEXT : APP_COLOR_SUBTEXT, "");
+        lv_label_set_text_fmt(n, LV_SYMBOL_WIFI "  %s", ap->ssid);
+        lv_label_set_long_mode(n, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(n, 400);
+        lv_obj_align(n, LV_ALIGN_LEFT_MID, 0, 0);
+
+        char info[64];
+        snprintf(info, sizeof(info), "%s%s  -  %s", wifi_list_contains(ap->ssid) ?
+                 "Saved  -  " : "", auth_word(ap->auth), signal_word(ap->rssi));
+        lv_obj_t *t = mk_label(r, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, info);
+        lv_obj_align(t, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+}
+
+static void add_poll(lv_timer_t *t)
+{
+    (void)t;
+    int n = net_time_scan_results(add.aps, NET_SCAN_MAX);
+    if (n < 0) return;                           /* still scanning */
+    add.n = n;
+    lv_timer_pause(add.poll);
+    add_fill_list();
+}
+
+static void add_rescan(void)
+{
+    lv_obj_clean(add.list);
+    lv_label_set_text(add.status, LV_SYMBOL_REFRESH "  Looking for networks...");
+    net_time_scan_request();
+    lv_timer_resume(add.poll);
+}
+
+static void add_rescan_clicked(lv_event_t *e)
+{
+    (void)e;
+    add_rescan();
+}
+
+static lv_obj_t *mk_btn(lv_obj_t *p, const char *text, int w, lv_event_cb_t cb, uint32_t color)
+{
+    lv_obj_t *b = lv_btn_create(p);
+    lv_obj_set_size(b, w, 48);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(color), 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(mk_label(b, APP_FONT_MEDIUM, APP_COLOR_TEXT, text));
+    return b;
+}
+
+static void add_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (add.view) return;
+    lv_obj_t *v = add.view = lv_obj_create(ui.root);
+    lv_obj_remove_style_all(v);
+    lv_obj_set_size(v, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(v, lv_color_hex(APP_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
+    lv_obj_add_flag(v, LV_OBJ_FLAG_CLICKABLE);        /* blocks the tabs underneath */
+    lv_obj_clear_flag(v, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Page 1: pick a network. */
+    lv_obj_t *pk = add.pick = lv_obj_create(v);
+    lv_obj_remove_style_all(pk);
+    lv_obj_set_size(pk, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(pk, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *t = mk_label(pk, APP_FONT_LARGE, APP_COLOR_TEXT, "Add a Wi-Fi network");
+    lv_obj_set_pos(t, 16, 14);
+    lv_obj_align(mk_btn(pk, LV_SYMBOL_REFRESH "  Rescan", 150, add_rescan_clicked, C_BUTTON),
+                 LV_ALIGN_TOP_RIGHT, -140, 8);
+    lv_obj_align(mk_btn(pk, "Cancel", 116, add_cancel_clicked, C_BUTTON),
+                 LV_ALIGN_TOP_RIGHT, -12, 8);
+    add.status = mk_label(pk, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, "");
+    lv_obj_set_pos(add.status, 16, 62);
+    add.list = lv_obj_create(pk);
+    lv_obj_remove_style_all(add.list);
+    lv_obj_set_size(add.list, LV_PCT(100), 416 - 88);
+    lv_obj_set_pos(add.list, 0, 88);
+    lv_obj_set_style_pad_hor(add.list, 12, 0);
+    lv_obj_set_style_pad_bottom(add.list, 12, 0);
+    lv_obj_set_style_pad_row(add.list, 8, 0);
+    lv_obj_set_flex_flow(add.list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(add.list, LV_DIR_VER);
+
+    /* Page 2: password. */
+    lv_obj_t *pp = add.pass = lv_obj_create(v);
+    lv_obj_remove_style_all(pp);
+    lv_obj_set_size(pp, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(pp, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(pp, LV_OBJ_FLAG_HIDDEN);
+    add.title = mk_label(pp, APP_FONT_MEDIUM, APP_COLOR_TEXT, "");
+    lv_label_set_long_mode(add.title, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(add.title, 460);
+    lv_obj_set_pos(add.title, 16, 18);
+    lv_obj_align(mk_btn(pp, LV_SYMBOL_OK "  Save", 130, add_save_clicked, 0x1B8F4A),
+                 LV_ALIGN_TOP_RIGHT, -140, 8);
+    lv_obj_align(mk_btn(pp, LV_SYMBOL_LEFT "  Back", 116, add_back_clicked, C_BUTTON),
+                 LV_ALIGN_TOP_RIGHT, -12, 8);
+    add.ta = lv_textarea_create(pp);
+    lv_textarea_set_one_line(add.ta, true);
+    lv_textarea_set_password_mode(add.ta, true);
+    lv_textarea_set_max_length(add.ta, 63);
+    lv_textarea_set_placeholder_text(add.ta, "Password");
+    lv_obj_set_style_text_font(add.ta, APP_FONT_MEDIUM, 0);
+    lv_obj_set_size(add.ta, 560, 52);
+    lv_obj_set_pos(add.ta, 16, 66);
+    lv_obj_add_state(add.ta, LV_STATE_FOCUSED);       /* show the cursor */
+    lv_obj_t *show = mk_checkbox(pp, "Show", false, add_show_clicked);
+    lv_obj_set_pos(show, 600, 76);
+    add.msg = mk_label(pp, LV_FONT_DEFAULT, 0xFFB74D, "");
+    lv_label_set_long_mode(add.msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(add.msg, 768);
+    lv_obj_set_pos(add.msg, 16, 128);
+    add.kb = lv_keyboard_create(pp);
+    lv_obj_set_size(add.kb, 800, 250);
+    lv_obj_align(add.kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(add.kb, add.ta);
+    lv_obj_add_event_cb(add.kb, add_kb_event, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(add.kb, add_kb_event, LV_EVENT_CANCEL, NULL);
+
+    add.poll = lv_timer_create(add_poll, 250, NULL);
+    add_rescan();
+}
+
 static void build_network_tab(lv_obj_t *tab)
 {
     lv_obj_t *p = mk_panel(tab);
@@ -522,10 +794,13 @@ static void build_network_tab(lv_obj_t *tab)
     lv_obj_set_flex_flow(ui.net_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(ui.net_list, 8, 0);
     lv_obj_clear_flag(ui.net_list, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    mk_note(sp, "The display connects to the strongest saved network in range. To add "
-                "networks, put a wifi.json file in the dashboard/import folder on the SD "
-                "card and restart (see README.md). It's erased once imported. Built-in = "
-                "set in main/wifi_secrets.h when the firmware was built.");
+    lv_obj_t *ab = mk_btn(sp, LV_SYMBOL_PLUS "  Add network", 220, add_clicked, 0x1E5A8C);
+    (void)ab;
+    mk_note(sp, "The display connects to the strongest saved network in range. Add "
+                "networks here, or several at once with a wifi.json file in the "
+                "dashboard/import folder on the SD card (see README.md; the file is erased "
+                "once imported). Built-in = set in main/wifi_secrets.h when the firmware "
+                "was built.");
 
     /* Remove only marks a network as deleted in flash; this erases it. */
     lv_obj_t *wp = mk_panel(tab);
@@ -727,6 +1002,8 @@ static void settings_destroy(void)
         s_timer = NULL;
     }
     game_dialog_close();
+    if (add.poll) lv_timer_del(add.poll);
+    memset(&add, 0, sizeof(add));            /* the launcher deletes the objects */
     memset(&ui, 0, sizeof(ui));
 }
 
