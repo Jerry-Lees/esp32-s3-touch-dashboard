@@ -327,6 +327,14 @@ static void timeout_changed(lv_event_t *e)
     }
 }
 
+static const char *s_saver_map[] = { "Turn off", "Photo slideshow", "" };
+
+static void saver_changed(lv_event_t *e)
+{
+    uint16_t id = lv_btnmatrix_get_selected_btn(lv_event_get_target(e));
+    if (id <= 1) settings_set_u8("scr_saver", id);
+}
+
 static void fps_changed(lv_event_t *e)
 {
     settings_set_show_fps(is_checked(e));
@@ -842,6 +850,14 @@ static void build_display_tab(lv_obj_t *tab)
                               "control, only on and off.)");
     lv_obj_set_width(note, LV_PCT(100));
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t *sv = mk_panel(tab);
+    mk_label(sv, APP_FONT_MEDIUM, APP_COLOR_TEXT, "When the screen times out");
+    mk_choices(sv, s_saver_map, settings_get_u8("scr_saver", 0) ? 1 : 0, 60, saver_changed);
+    mk_note(sv, "Photo slideshow shows the pictures in dashboard/pictures on the SD card "
+                "(full screen) instead of turning the screen off. Tap to stop it. With no "
+                "card or no pictures, the screen turns off as usual. The screen never "
+                "times out while the Photos app is open.");
 
     lv_obj_t *tp = mk_panel(tab);
     mk_checkbox(tp, "Show the info ticker on the home screen", settings_get_ticker(),

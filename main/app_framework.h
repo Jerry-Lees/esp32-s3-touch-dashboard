@@ -47,6 +47,8 @@ extern const app_t flappy_app;
 extern const app_t snake_app;
 extern const app_t g2048_app;
 extern const app_t stonks_app;
+extern const app_t photos_app;
+extern const app_t files_app;
 extern const app_t settings_app;
 
 /* Weather locations, so Settings can offer a default-city choice. */

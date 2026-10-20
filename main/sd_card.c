@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_vfs_fat.h"
+#include "diskio_sdmmc.h"
 #include "ff.h"
 #include "sdmmc_cmd.h"
 
@@ -42,6 +43,7 @@ static const char *TAG = "sd_card";
 
 static sdmmc_card_t *s_card;
 static bool          s_mounted;   /* __atomic */
+static int           s_pdrv;      /* FatFs drive number, set before s_mounted */
 
 bool sd_card_mounted(void)
 {
@@ -303,6 +305,7 @@ static void mount_task(void *arg)
         ESP_LOGW(TAG, "No SD card found (%s)", esp_err_to_name(err));
     } else {
         sdmmc_card_print_info(stdout, s_card);
+        s_pdrv = ff_diskio_get_pdrv_card(s_card);
         __atomic_store_n(&s_mounted, true, __ATOMIC_RELEASE);
         ESP_LOGI(TAG, "Mounted at " SD_MOUNT_POINT);
         make_folders();
@@ -313,6 +316,16 @@ static void mount_task(void *arg)
         }
     }
     vTaskDelete(NULL);
+}
+
+bool sd_card_fatfs_path(const char *path, char *out, size_t len)
+{
+    size_t n = strlen(SD_MOUNT_POINT);
+    if (!sd_card_mounted() || strncmp(path, SD_MOUNT_POINT, n) != 0 ||
+        (path[n] != 0 && path[n] != '/')) {
+        return false;
+    }
+    return snprintf(out, len, "%d:%s", s_pdrv, path[n] ? path + n : "/") < (int)len;
 }
 
 void sd_card_start(void)

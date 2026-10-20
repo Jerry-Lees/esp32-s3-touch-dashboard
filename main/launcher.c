@@ -14,6 +14,7 @@
 #include "app_framework.h"
 #include "launcher.h"
 #include "net_time.h"
+#include "photo_frame.h"
 #include "settings.h"
 #include "screenshot.h"
 #include "sd_card.h"
@@ -49,6 +50,8 @@ static const app_t *const s_apps[] = {
     &world_clock_app,
     &weather_app,
     &stonks_app,
+    &photos_app,
+    &files_app,
     &games_folder,
     &settings_app,
 };
@@ -377,11 +380,17 @@ static void build_home(void)
  * the waking tap so it doesn't also press whatever is underneath.
  */
 
+static bool s_saver;                /* the catcher holds the photo screensaver */
+
 static void screen_wake(lv_event_t *e)
 {
     (void)e;
     if (!s_wake_catcher) {
         return;
+    }
+    if (s_saver) {
+        photo_frame_close();
+        s_saver = false;
     }
     wavesahre_rgb_lcd_bl_on();
     /* Async: we're inside this object's own event. */
@@ -392,9 +401,17 @@ static void screen_wake(lv_event_t *e)
 static void screen_timeout_tick(lv_timer_t *t)
 {
     (void)t;
-    int minutes = settings_get_screen_timeout_min();
-    if (s_wake_catcher || minutes == 0) {
+    /* A screensaver with no pictures to show turns the screen off instead. */
+    if (s_saver && (photo_frame_state() == PF_EMPTY || photo_frame_state() == PF_NO_CARD)) {
+        photo_frame_close();
+        lv_obj_clean(s_wake_catcher);
+        s_saver = false;
+        wavesahre_rgb_lcd_bl_off();
         return;
+    }
+    int minutes = settings_get_screen_timeout_min();
+    if (s_wake_catcher || minutes == 0 || s_current_app == &photos_app) {
+        return;                          /* the Photos app is a photo frame: stay on */
     }
     if (lv_disp_get_inactive_time(NULL) < (uint32_t)minutes * 60000U) {
         return;
@@ -405,7 +422,12 @@ static void screen_timeout_tick(lv_timer_t *t)
     lv_obj_set_size(s_wake_catcher, LV_PCT(100), LV_PCT(100));
     lv_obj_add_flag(s_wake_catcher, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_wake_catcher, screen_wake, LV_EVENT_PRESSED, NULL);
-    wavesahre_rgb_lcd_bl_off();
+    if (settings_get_u8("scr_saver", 0) == 1 && sd_card_mounted()) {
+        photo_frame_open(s_wake_catcher, 800, 480);   /* slideshow instead of dark */
+        s_saver = true;
+    } else {
+        wavesahre_rgb_lcd_bl_off();
+    }
 }
 
 /* ---------- FPS meter ----------

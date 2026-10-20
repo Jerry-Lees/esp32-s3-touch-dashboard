@@ -23,7 +23,7 @@ Nothing else is attached; it's powered and programmed over its USB-C port.
 | Touch | **GT911** capacitive touch (I2C: SDA GPIO8, SCL GPIO9, INT GPIO4) |
 | I/O expander | **CH422G** on the same I2C bus: touch reset, LCD backlight (on/off only, no dimming), SD card chip select, 2 isolated digital inputs and 2 open-drain outputs |
 | Clock | **PCF85063** real-time clock on I2C. A backup battery can be fitted but isn't in this unit, so it keeps time across resets and reflashes but not power loss |
-| microSD | Card slot on SPI (MOSI GPIO11, CLK GPIO12, MISO GPIO13; chip select via the CH422G). FAT32 and exFAT cards; used for Wi-Fi network import (see [SD card](#sd-card)) |
+| microSD | Card slot on SPI (MOSI GPIO11, CLK GPIO12, MISO GPIO13; chip select via the CH422G). FAT32 and exFAT cards; used for photos, files, screenshots, backups and Wi-Fi network import (see [SD card](#sd-card)) |
 | Also on the board (not used yet) | RS485, CAN, digital in/out terminals |
 | USB | USB-C to the ESP32-S3's built-in USB-Serial/JTAG (shows up as `/dev/ttyACM0` on Linux) |
 
@@ -40,8 +40,9 @@ Board documentation and schematic:
   screen that scrolls the weather for the cities you pick (now, today and tomorrow) and your
   stock watchlist (price, today's change, next earnings call). Its data refreshes in the
   background even when the Weather and St0nks apps are closed.
-- **Screen timeout**: the backlight turns off after a chosen time without touches; the tap that
-  wakes it doesn't press anything.
+- **Screen timeout**: after a chosen time without touches, the backlight turns off, or (Settings >
+  Display, "When the screen times out") a **photo slideshow** starts. The tap that wakes it doesn't
+  press anything.
 - Optional FPS / CPU meter.
 
 ### World Clock
@@ -78,6 +79,36 @@ A stock watchlist named after the meme, with a diamond-hands icon.
   is saved in flash.
 - Prices from Yahoo Finance's public chart API (delayed, no key), refreshed every 15 minutes or
   with the refresh button. Earnings dates from Nasdaq's public API (US company stocks only).
+
+### Photos
+
+A slideshow of the pictures in `dashboard/pictures/` on the SD card (and folders inside it, up to
+3 deep), cross-fading between them.
+
+- **Formats**: JPEG, PNG, GIF (first frame) and BMP (24/32-bit). Not supported: progressive JPEG,
+  interlaced PNG, HEIC and WebP (convert them to JPEG). Unsupported or damaged files are skipped.
+- **Any size**: pictures are shrunk while they're read, so 12+ megapixel phone photos and large PNGs
+  work (big PNGs take a few seconds). Phone photos are turned upright using their EXIF rotation.
+- **Controls** (tap the picture): previous / next, pause, time per picture (5 s to 5 min),
+  shuffle, Fit (whole picture) or Fill (fills the screen, edges cropped), Full screen, and
+  **delete** (asks first, then erases the file from the card). The bar hides itself after 5 s.
+- The screen timeout is skipped while Photos is open, so it works as a photo frame.
+
+### Files
+
+A file manager for the SD card. It opens in the `dashboard` folder, and **Up** goes as far as the
+top of the card.
+
+- Shows each item's size and date, the number of items, and the card's free space. Sort by name,
+  date (newest first) or size (biggest first); folders come first. Large folders are shown 50 at a
+  time.
+- Tap to open: folders, pictures (full screen, previous / next, delete) and text files (the first
+  32 KB). Any file can be viewed as text or as hex (first 4 KB).
+- The row menu (the list button, or long-press a row) shows details and offers **Rename**,
+  **Delete** (folders with everything in them, after asking) and the viewers. **+ Folder** makes a
+  new folder.
+- Safety: the dashboard's own folders can't be renamed or deleted, and files named `wifi*.json`
+  (which may hold Wi-Fi passwords) are never shown.
 
 ### Games
 
@@ -173,7 +204,7 @@ startup). It creates one folder, `dashboard`, and never touches anything else on
 | Folder | What it's for |
 |---|---|
 | `dashboard/import/` | One-time inbox. Files here are read at startup, applied, then **erased**. |
-| `dashboard/pictures/` | Photos (for a future photo frame). |
+| `dashboard/pictures/` | Pictures for the [Photos](#photos) slideshow and the screensaver (JPEG, PNG, GIF, BMP; folders inside are included). |
 | `dashboard/screenshots/` | Screenshots: long-press the top bar on any screen (see [Taking screenshots](#taking-screenshots)). |
 | `dashboard/backup/` | Settings backups (see [Backing up settings](#backing-up-settings)). Never include Wi-Fi networks. |
 | `dashboard/apps/` | Reserved for apps loaded from the card. |
@@ -284,6 +315,8 @@ Long-press an empty part of the top bar on any screen (the display pauses for a 
 | `main/sd_card.c` | microSD card (FAT32 / exFAT): `dashboard` folders and the import inbox |
 | `main/wifi_list.c` | Saved Wi-Fi networks (up to 10, in NVS) |
 | `main/settings_backup.c` | Settings backup / restore on the SD card |
+| `main/photo_frame.c`, `main/pic_decode.c` | Slideshow engine (Photos app and screensaver); JPEG/BMP and PNG/GIF decoding |
+| `main/app_files.c` | File manager |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `tools/` | Image generators and the screenshot receiver |
 | `CLAUDE.md` | Detailed developer notes |

@@ -23,3 +23,8 @@ bool sd_card_take_notice(char *out, size_t len);
 
 /* True once the card is mounted and files can be read. */
 bool sd_card_mounted(void);
+
+/* "/sdcard/a/b" -> "0:/a/b", for FatFs calls (f_readdir gives sizes and dates
+ * without a stat per file). False if the card isn't mounted or the path
+ * isn't on it. */
+bool sd_card_fatfs_path(const char *path, char *out, size_t len);
