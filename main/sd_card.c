@@ -18,12 +18,14 @@
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include "sdmmc_cmd.h"
 
 #include "net_time.h"
 #include "sd_card.h"
+#include "settings_backup.h"
 #include "wifi_list.h"
 
 /* Most cards over 32 GB come formatted as exFAT, which ESP-IDF ships
@@ -51,8 +53,13 @@ bool sd_card_mounted(void)
 static char s_notice[160];
 static bool s_notice_ready;   /* __atomic; the writer only fills an empty slot */
 
+/* SD task only. Waits (up to 3 s) for the screen to take the previous
+ * message, so two messages at startup are both shown. */
 static void notice(const char *fmt, ...)
 {
+    for (int i = 0; i < 30 && __atomic_load_n(&s_notice_ready, __ATOMIC_ACQUIRE); i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     if (__atomic_load_n(&s_notice_ready, __ATOMIC_ACQUIRE)) return;
     va_list ap;
     va_start(ap, fmt);
@@ -89,7 +96,9 @@ static const char README_TXT[] =
     "              passwords don't stay on the card.\r\n"
     "pictures\\     Photos (for a future photo frame).\r\n"
     "screenshots\\  Screenshots: long-press the top bar on any screen.\r\n"
-    "backup\\       Settings backups (never include Wi-Fi passwords).\r\n"
+    "backup\\       Settings backups (Settings > About > Back up settings). They\r\n"
+    "              never include Wi-Fi networks. To restore one, copy it into\r\n"
+    "              import\\ and restart the display.\r\n"
     "apps\\         Reserved for apps loaded from the card.\r\n";
 
 static void make_folders(void)
@@ -298,6 +307,10 @@ static void mount_task(void *arg)
         ESP_LOGI(TAG, "Mounted at " SD_MOUNT_POINT);
         make_folders();
         import_wifi();
+        if (settings_backup_import(notice)) {
+            vTaskDelay(pdMS_TO_TICKS(4000));      /* time to read the message */
+            esp_restart();                       /* every app reloads its settings */
+        }
     }
     vTaskDelete(NULL);
 }

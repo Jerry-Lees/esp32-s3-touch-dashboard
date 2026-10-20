@@ -106,7 +106,7 @@ saved in flash.
 
 Tabs for Network (Wi-Fi status, signal and your saved networks, with Remove), Display (screen timeout, info ticker, FPS meter),
 Time (12/24-hour, time source), Weather (default city, ticker cities), St0nks (show the watchlist
-in the ticker) and About (chip, memory, versions). Settings are stored in the ESP32's NVS flash
+in the ticker) and About (chip, memory, versions, settings backup). Settings are stored in the ESP32's NVS flash
 area and survive reboots and reflashing.
 
 ## Building and flashing
@@ -175,7 +175,7 @@ startup). It creates one folder, `dashboard`, and never touches anything else on
 | `dashboard/import/` | One-time inbox. Files here are read at startup, applied, then **erased**. |
 | `dashboard/pictures/` | Photos (for a future photo frame). |
 | `dashboard/screenshots/` | Screenshots: long-press the top bar on any screen (see [Taking screenshots](#taking-screenshots)). |
-| `dashboard/backup/` | Settings backups (never include Wi-Fi passwords). |
+| `dashboard/backup/` | Settings backups (see [Backing up settings](#backing-up-settings)). Never include Wi-Fi networks. |
 | `dashboard/apps/` | Reserved for apps loaded from the card. |
 
 A `README.txt` in the `dashboard` folder explains the same thing.
@@ -240,6 +240,21 @@ saved and previously removed network is really gone (the built-in network isn't 
 Saved networks live in the ESP32's internal NVS storage, like the other settings. That storage
 isn't encrypted, so treat the device itself like anything else that knows your Wi-Fi password.
 
+### Backing up settings
+
+**Settings > About > Back up settings to the SD card** saves every setting to
+`dashboard/backup/settings_<date>_<time>.json`: clock format, screen timeout, ticker and FPS
+options, weather cities, the St0nks watchlist, game levels and best scores. **Wi-Fi networks and
+passwords are never included.**
+
+**To restore:** copy a backup file from `dashboard/backup/` into `dashboard/import/` (keep the
+`settings....json` name) and restart the display. It replaces the current settings, deletes the
+copy in `import/` (the original in `backup/` stays), shows "Restored N settings" and restarts once
+more so every app picks up the restored values. If the file is damaged or isn't a backup, nothing
+is changed, the file stays, and a message says why.
+
+The backup is plain text, so you can look at it (or carefully edit it) on your PC.
+
 ## Taking screenshots
 
 Long-press an empty part of the top bar on any screen (the display pauses for a few seconds).
@@ -268,6 +283,7 @@ Long-press an empty part of the top bar on any screen (the display pauses for a 
 | `main/net_time.c`, `main/rtc.c` | Wi-Fi, NTP time and the RTC chip |
 | `main/sd_card.c` | microSD card (FAT32 / exFAT): `dashboard` folders and the import inbox |
 | `main/wifi_list.c` | Saved Wi-Fi networks (up to 10, in NVS) |
+| `main/settings_backup.c` | Settings backup / restore on the SD card |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `tools/` | Image generators and the screenshot receiver |
 | `CLAUDE.md` | Detailed developer notes |

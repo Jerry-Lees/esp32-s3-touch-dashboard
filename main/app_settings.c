@@ -26,6 +26,8 @@
 #include "launcher.h"
 #include "net_time.h"
 #include "settings.h"
+#include "settings_backup.h"
+#include "sd_card.h"
 #include "wifi_list.h"
 
 #define C_ACCENT   0x42A5F5
@@ -922,6 +924,20 @@ static void build_stonks_tab(lv_obj_t *tab)
                "the St0nks app. Turn the ticker itself on in the Display tab.");
 }
 
+static void backup_clicked(lv_event_t *e)
+{
+    (void)e;
+    char path[96], msg[140];
+    if (!sd_card_mounted()) {
+        launcher_toast("No SD card: insert one and restart the display", 5000);
+    } else if (settings_backup_save(path, sizeof(path))) {
+        snprintf(msg, sizeof(msg), "Settings saved to %s", path);
+        launcher_toast(msg, 5000);
+    } else {
+        launcher_toast("Couldn't write the backup to the SD card", 5000);
+    }
+}
+
 static void build_about_tab(lv_obj_t *tab)
 {
     char buf[48];
@@ -953,6 +969,14 @@ static void build_about_tab(lv_obj_t *tab)
     ui.about_heap   = mk_row(p, "Free internal RAM");
     ui.about_psram  = mk_row(p, "Free PSRAM");
     ui.about_uptime = mk_row(p, "Uptime");
+
+    lv_obj_t *bp = mk_panel(tab);
+    mk_btn(bp, LV_SYMBOL_SAVE "  Back up settings to the SD card", 420, backup_clicked,
+           0x1E5A8C);
+    mk_note(bp, "Saves every setting (clock, display, ticker, weather, St0nks watchlist, "
+                "game levels and best scores) to dashboard/backup on the SD card. Wi-Fi "
+                "networks are never included. To restore, copy a backup file into "
+                "dashboard/import and restart the display."); 
 }
 
 /* ---------- app entry points ---------- */
