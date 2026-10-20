@@ -13,6 +13,7 @@
 #include "lvgl.h"
 #include "app_framework.h"
 #include "launcher.h"
+#include "clock_tools.h"
 #include "net_time.h"
 #include "photo_frame.h"
 #include "settings.h"
@@ -48,6 +49,7 @@ static const app_t games_folder = {
 
 static const app_t *const s_apps[] = {
     &world_clock_app,
+    &timers_app,
     &weather_app,
     &stonks_app,
     &photos_app,
@@ -62,6 +64,7 @@ static const app_t *const s_apps[] = {
 static lv_obj_t   *s_home_scr;
 static lv_obj_t   *s_home_clock;
 static lv_obj_t   *s_home_wifi;
+static lv_obj_t   *s_home_status;  /* next alarm / running timer */
 static lv_obj_t   *s_home_grid;
 static lv_obj_t   *s_home_ticker;  /* info ticker strip, or NULL */
 static lv_obj_t   *s_folder_scr;    /* open folder's screen, or NULL */
@@ -258,6 +261,14 @@ static void home_tick(lv_timer_t *t)
     } else {
         lv_label_set_text(s_home_clock, "--:--");
     }
+
+    char st[32];
+    if (clock_tools_status(st, sizeof(st))) {
+        lv_label_set_text(s_home_status, st);
+        lv_obj_clear_flag(s_home_status, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_home_status, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void make_tile(lv_obj_t *grid, const app_t *app, lv_coord_t w, lv_coord_t h)
@@ -369,6 +380,13 @@ static void build_home(void)
     lv_obj_set_style_text_font(s_home_wifi, APP_FONT_MEDIUM, 0);
     lv_obj_align(s_home_wifi, LV_ALIGN_RIGHT_MID, -130, 0);
 
+    s_home_status = lv_label_create(bar);
+    lv_obj_set_style_text_font(s_home_status, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(s_home_status, lv_color_hex(0xFFB74D), 0);
+    lv_label_set_text(s_home_status, "");
+    lv_obj_align(s_home_status, LV_ALIGN_RIGHT_MID, -180, 0);
+    lv_obj_add_flag(s_home_status, LV_OBJ_FLAG_HIDDEN);
+
     layout_home();
 
     lv_timer_create(home_tick, 500, NULL);
@@ -398,6 +416,19 @@ static void screen_wake(lv_event_t *e)
     s_wake_catcher = NULL;
 }
 
+void launcher_wake(void)
+{
+    lv_disp_trig_activity(NULL);
+    if (!s_wake_catcher) return;
+    if (s_saver) {
+        photo_frame_close();
+        s_saver = false;
+    }
+    wavesahre_rgb_lcd_bl_on();
+    lv_obj_del(s_wake_catcher);
+    s_wake_catcher = NULL;
+}
+
 static void screen_timeout_tick(lv_timer_t *t)
 {
     (void)t;
@@ -410,7 +441,7 @@ static void screen_timeout_tick(lv_timer_t *t)
         return;
     }
     int minutes = settings_get_screen_timeout_min();
-    if (s_wake_catcher || minutes == 0 || s_current_app == &photos_app) {
+    if (s_wake_catcher || minutes == 0 || s_current_app == &photos_app || clock_tools_alerting()) {
         return;                          /* the Photos app is a photo frame: stay on */
     }
     if (lv_disp_get_inactive_time(NULL) < (uint32_t)minutes * 60000U) {
@@ -539,4 +570,5 @@ void launcher_start(void)
     lv_timer_create(fps_init_tick, 5, NULL);
     lv_timer_create(ticker_service_tick, 1000, NULL);
     lv_timer_create(notice_tick, 500, NULL);
+    clock_tools_start();
 }

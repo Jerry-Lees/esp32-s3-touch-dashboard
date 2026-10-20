@@ -15,3 +15,7 @@ void launcher_apply_ticker(void);
 /* Shows a short message banner over whatever is on screen for ms
  * milliseconds (tap to dismiss). LVGL task only. */
 void launcher_toast(const char *text, uint32_t ms);
+
+/* Turns the screen back on if it timed out (and stops the photo
+ * screensaver), and restarts the timeout. LVGL task only. */
+void launcher_wake(void);

@@ -92,7 +92,11 @@ class Display:
                 return r
 
     def hello(self):
-        r = self.request("hello")
+        try:
+            r = self.request("hello")
+        except Fail:
+            time.sleep(1)               # just reset or replugged: one more try
+            r = self.request("hello")
         if not r.endswith(" 1"):
             raise Fail("there's no SD card in the display (insert one and restart it)")
 

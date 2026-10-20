@@ -36,6 +36,7 @@ Board documentation and schematic:
 ### Home screen and launcher
 
 - Tile grid of apps, with a clock and Wi-Fi status in the top bar. Games live in a **Games folder**.
+- The top bar also shows the soonest running timer, or the next alarm (in orange).
 - **Info ticker** (optional, Settings > Display): a strip along the bottom fifth of the home
   screen that scrolls the weather for the cities you pick (now, today and tomorrow) and your
   stock watchlist (price, today's change, next earnings call). Its data refreshes in the
@@ -52,6 +53,26 @@ Board documentation and schematic:
 Four cards: US Central (local), Eastern, London and UTC, with the date and UTC offset. Time comes
 from the internet (NTP) and is saved to the board's RTC chip, so it's correct straight after a
 reset even before Wi-Fi connects. 12- or 24-hour format.
+
+### Timers
+
+| | |
+|---|---|
+| ![Timers](docs/screenshots/timers.png) | ![Stopwatch](docs/screenshots/stopwatch.png) |
+| ![Alarms](docs/screenshots/alarms.png) | ![Editing an alarm](docs/screenshots/alarm_edit.png) |
+
+- **Timer**: set hours / minutes / seconds, or tap a preset (1 to 30 min). Up to 4 run at once,
+  each with pause, restart and remove.
+- **Stopwatch**: start / stop, laps (each lap's time and the running total), reset.
+- **Alarms**: up to 6, each with a time and the days it repeats (weekdays, every day, any days you
+  pick, or once: a one-time alarm turns itself off after ringing). On/off switch per alarm. Saved
+  in flash, so they survive restarts and are included in settings backups.
+- Everything keeps running when you leave the app. When a timer ends or an alarm is due, the
+  screen wakes (also from screen-off or the photo screensaver) and **flashes red** with a big
+  message until you tap **Dismiss** (alarms also have **Snooze 9 min**). The board has no
+  speaker, so it's silent.
+- Timers and the stopwatch use the chip's own timer, so they work without the clock being set,
+  but they're lost on a restart. Alarms need the real time (from Wi-Fi or the RTC).
 
 ### Weather
 
@@ -352,6 +373,7 @@ $PY tools/sdcard.py mkdir pictures/holiday
 | `main/settings_backup.c` | Settings backup / restore on the SD card |
 | `main/photo_frame.c`, `main/pic_decode.c` | Slideshow engine (Photos app and screensaver); JPEG/BMP and PNG/GIF decoding |
 | `main/app_files.c` | File manager |
+| `main/clock_tools.c`, `main/app_timers.c` | Timers, stopwatch, alarms and their alerts; the Timers app |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
 | `tools/` | Image generators, the screenshot receiver and the USB file tool |
