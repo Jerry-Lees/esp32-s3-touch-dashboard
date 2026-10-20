@@ -397,6 +397,30 @@ static void remove_answer(lv_event_t *e)
     rebuild_net_list();
 }
 
+static void wipe_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    game_dialog_close();
+    if (!yes) return;
+    bool ok = wifi_list_wipe();
+    net_time_networks_changed();         /* drop a connection to a wiped network */
+    launcher_toast(ok ? "All saved networks were wiped from the display's memory"
+                      : "Wipe failed (see the log); some settings may be reset",
+                   ok ? 5000 : 10000);
+    rebuild_net_list();
+}
+
+static void wipe_clicked(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_t *row = game_dialog_open(ui.root, "Wipe all saved networks?\n"
+                                              "They're erased from memory for good,\n"
+                                              "including ones removed earlier.\n"
+                                              "Other settings are kept.");
+    game_dialog_button(row, LV_SYMBOL_TRASH "  Wipe", wipe_answer, (void *)1);
+    game_dialog_button(row, "Cancel", wipe_answer, NULL);
+}
+
 static void remove_clicked(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
@@ -502,6 +526,22 @@ static void build_network_tab(lv_obj_t *tab)
                 "networks, put a wifi.json file in the dashboard/import folder on the SD "
                 "card and restart (see README.md). It's erased once imported. Built-in = "
                 "set in main/wifi_secrets.h when the firmware was built.");
+
+    /* Remove only marks a network as deleted in flash; this erases it. */
+    lv_obj_t *wp = mk_panel(tab);
+    lv_obj_t *wb = lv_btn_create(wp);
+    lv_obj_set_size(wb, LV_PCT(100), 56);
+    lv_obj_set_style_radius(wb, 12, 0);
+    lv_obj_set_style_bg_color(wb, lv_color_hex(0x5D1F1F), 0);
+    lv_obj_set_style_shadow_width(wb, 0, 0);
+    lv_obj_add_event_cb(wb, wipe_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(mk_label(wb, APP_FONT_MEDIUM, APP_COLOR_TEXT,
+                           LV_SYMBOL_TRASH "  Securely wipe all saved networks"));
+    mk_note(wp, "Remove takes a network off the list straight away, but its password "
+                "stays in the display's flash memory, marked as deleted, until that space "
+                "is reused. Wiping erases the settings area completely, so every saved and "
+                "removed network is gone for good. Your other settings are copied and put "
+                "back. The built-in network isn't affected.");
     rebuild_net_list();
 }
 

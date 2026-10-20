@@ -226,6 +226,12 @@ says what to fix.
 deleted from the display's memory straight away, and if it was the network in use, the display
 switches to another saved network.
 
+**To erase them for good:** **Settings > Network > Securely wipe all saved networks**. Remove takes
+a network off the list, but like most flash storage, the display's settings area only *marks* old
+data as deleted; the password stays in the chip until that space is reused. The wipe copies your
+other settings aside, erases the whole settings area, and puts the other settings back, so every
+saved and previously removed network is really gone (the built-in network isn't affected).
+
 Saved networks live in the ESP32's internal NVS storage, like the other settings. That storage
 isn't encrypted, so treat the device itself like anything else that knows your Wi-Fi password.
 

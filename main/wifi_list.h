@@ -40,5 +40,13 @@ bool wifi_list_add(const wifi_net_t *nets, int n);
 /* Removes a saved network; false if it wasn't saved. */
 bool wifi_list_remove(const char *ssid);
 
+/* Securely wipes every saved network, including leftovers of removed ones
+ * that NVS only marked as deleted: copies all other NVS values to RAM,
+ * erases the whole NVS partition, then writes them back. LVGL task only
+ * (the other NVS writers live there). Returns false if something failed:
+ * if copying failed nothing is erased; if restoring failed some settings
+ * may be back at their defaults. */
+bool wifi_list_wipe(void);
+
 /* Increases on every change, so the UI can tell when to redraw. */
 uint32_t wifi_list_version(void);
