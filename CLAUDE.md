@@ -35,6 +35,7 @@ Context handed over from an earlier chat session. Read this fully before making 
 
 - Location: `~/esp/my_display`. It started as a copy of Waveshare's ESP-IDF demo `08_lvgl_Porting`. The original demo package is in `~/esp/waveshare-demo/`.
 - Git repo. `.gitignore` excludes `build/`, `managed_components/` and `main/wifi_secrets.h`. Commit after each working milestone.
+- **Public GitHub remote:** `origin` = https://github.com/Jerry-Lees/esp32-s3-touch-dashboard (branch `main`). **Never `git push` (or anything else that publishes to GitHub: `gh repo`/`gh release`, force-push, changing visibility) unless the user expressly says to push, asks for it, or confirms when asked.** "Commit it" means a local commit only. Approval to push covers that one push, not later ones.
 - **LVGL 8.4.0** is vendored in `components/lvgl__lvgl`. Use the **LVGL v8 API** (`lv_scr_act`, `lv_btn_create`, `lv_obj_clear_flag`, `lv_timer_del`, `lv_disp_get_ver_res`, and so on), not v9.
 - Also vendored: `espressif__esp_lcd_touch` and `espressif__esp_lcd_touch_gt911`.
 
@@ -63,6 +64,7 @@ Context handed over from an earlier chat session. Read this fully before making 
 | `stonks_icon.c` | **Generated** by `tools/gen_stonks_icon.py` (diamond-hands icon from Twemoji, CC-BY 4.0). |
 | `ticker.c/.h` | Info ticker: 96 px strip at the bottom of the **home screen only** (when `settings_get_ticker()`). One label per item marching left (keeps each under LVGL's 8191 px coordinate limit); item text is rebuilt as it enters. Sources: `weather_ticker_items` (chosen cities: now + today + tomorrow) and `stonks_ticker_items` (price, change, earnings date), declared in `app_framework.h`. `ticker_service()` (1 s launcher timer) calls `weather_background_tick` / `stonks_background_tick` so data refreshes while those apps are closed. |
 | `screenshot.c/.h` | Long-press any launcher top bar -> `lv_snapshot` of the screen is printed to the USB serial console as base64 lines (`SHOT-BEGIN w h n` / `SHOT-i:...` / `SHOT-END`). `tools/screenshot.py` (run with the IDF venv Python, which has pyserial; it's fine for Claude to run it in the background, unlike `idf.py monitor`) saves them as PNGs. README images live in `docs/screenshots/`; **hide private details** (Wi-Fi name, IP, MAC) before committing them. |
+| `sd_card.c/.h` | microSD on SPI2 (MOSI 11, CLK 12, MISO 13, CS = CH422G EXIO4, kept low: the backlight writes are 0x0E/0x0A, not Waveshare's 0x1E/0x1A which deselected the card). `sd_card_start()` (from `app_main`) mounts it at `/sdcard` in a background task, never formats, and logs the top folder (text of small files too). `sd_card_mounted()`. **Needs exFAT enabled in ESP-IDF** (below). |
 | `wifi_secrets.h` | `WIFI_SSID` and `WIFI_PASSWORD`. **Never print, log, commit or overwrite this file.** |
 | `app_world_clock.c` | World Clock: four cards for Central (local), Eastern, London and UTC. 12/24-hour comes from `settings_get_24h()`. |
 | `app_weather.c` | Weather: Open-Meteo over HTTPS (`esp_http_client` + `esp_crt_bundle`), downloads in a FreeRTOS task, cJSON parsing, icons drawn from LVGL shapes, 6 locations with Lee's Summit MO as the default (`s_locs[]`), 15-minute refresh. |
@@ -97,6 +99,8 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 - `nvs_flash_init()` currently runs inside `net_time_start()` **only if Wi-Fi is configured**. Anything that uses NVS should initialize it early and unconditionally; it's safe to call twice.
 - **The RTC has no backup battery** (the user's board has none fitted; the user may add one later). The time survives RESET, reflashing and crashes, but not unplugging. After a power loss the RTC is ignored until Wi-Fi syncs.
 - **cJSON allocates in PSRAM**: St0nks' worker calls `cJSON_InitHooks` (PSRAM malloc, normal `free`) the first time St0nks opens. This applies to every cJSON user (Weather too); it's safe because `free()` handles both memory types.
+- **exFAT is enabled by editing ESP-IDF itself** (the user's choice, documented in README "exFAT support"): `~/esp/esp-idf/components/fatfs/src/ffconf.h` has `#define FF_FS_EXFAT 1` (ships as 0, no Kconfig). `sd_card.c` has an `#error` if it's off. After any ESP-IDF update or reinstall, redo the edit. With exFAT on, ESP-IDF 5.5's `ff.c` only compiles with `CONFIG_FATFS_USE_LABEL=y` (set in sdkconfig). Long filenames are on (`CONFIG_FATFS_LFN_HEAP`).
+- Reading the boot log yourself: a small pyserial script (IDF venv Python) that opens `/dev/ttyACM0` with DTR/RTS low, pulses RTS to reset, and reads for N seconds works fine non-interactively (unlike `idf.py monitor`). The log contains the Wi-Fi name and IP, so don't paste it into anything public.
 - Harmless build and boot warnings, which you can ignore: "esp_blockdev does not contain a CMakeLists.txt", "Could not use git describe" (disappears once commits exist), and the legacy I2C driver warning.
 
 ## Settings (done)
@@ -119,11 +123,11 @@ To add an app: write `main/app_x.c` defining `const app_t x_app`, add the `exter
 1. Read the relevant files before editing. The code in `main/` is the source of truth.
 2. Make the change, add any new `.c` files to `main/CMakeLists.txt`, and build with `. ~/esp/esp-idf/export.sh >/dev/null 2>&1 && idf.py build`.
 3. Fix compile errors yourself. Then flash with `idf.py -p /dev/ttyACM0 flash` and ask the user to test on the device and paste monitor output if needed.
-4. After the user confirms it works, commit with a clear message.
+4. After the user confirms it works, commit with a clear message. **Don't push** unless the user explicitly asks (see Project above).
 
 ## Ideas list (for later)
 
-Weather: colour-tinted cards per condition (grey icons on cloudy days look flat). Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485 and an SD card photo frame.
+Weather: colour-tinted cards per condition (grey icons on cloudy days look flat). Timer/stopwatch, alarm clock (using the RTC so it keeps time without Wi-Fi), Home Assistant dashboard, Jellyfin "now playing" (the user runs a Jellyfin server), network/server monitor, relay control using DO0/DO1, input monitor using DI0/DI1, CAN/OBD-II viewer, Modbus over RS485 and an SD card photo frame (the card already mounts at `/sdcard`).
 
 **Very, very low priority** (the user said so; don't suggest them as next steps):
 

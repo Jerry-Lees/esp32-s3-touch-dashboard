@@ -23,7 +23,8 @@ Nothing else is attached; it's powered and programmed over its USB-C port.
 | Touch | **GT911** capacitive touch (I2C: SDA GPIO8, SCL GPIO9, INT GPIO4) |
 | I/O expander | **CH422G** on the same I2C bus: touch reset, LCD backlight (on/off only, no dimming), SD card chip select, 2 isolated digital inputs and 2 open-drain outputs |
 | Clock | **PCF85063** real-time clock on I2C. A backup battery can be fitted but isn't in this unit, so it keeps time across resets and reflashes but not power loss |
-| Also on the board (not used yet) | microSD slot (SPI), RS485, CAN, digital in/out terminals |
+| microSD | Card slot on SPI (MOSI GPIO11, CLK GPIO12, MISO GPIO13; chip select via the CH422G). FAT32 and exFAT cards are mounted at boot; nothing uses the files yet |
+| Also on the board (not used yet) | RS485, CAN, digital in/out terminals |
 | USB | USB-C to the ESP32-S3's built-in USB-Serial/JTAG (shows up as `/dev/ttyACM0` on Linux) |
 
 Board documentation and schematic:
@@ -113,23 +114,52 @@ area and survive reboots and reflashing.
 You need [ESP-IDF v5.5](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/get-started/index.html).
 LVGL 8.4 and the touch drivers are included in `components/`.
 
-1. Create `main/wifi_secrets.h` with your Wi-Fi details (2.4 GHz networks only). This file is in
+1. **Enable exFAT in ESP-IDF** (one-time; see [exFAT support](#exfat-support) below).
+2. Create `main/wifi_secrets.h` with your Wi-Fi details (2.4 GHz networks only). This file is in
    `.gitignore` so it never gets committed:
    ```c
    #pragma once
    #define WIFI_SSID     "your network name"
    #define WIFI_PASSWORD "your password"
    ```
-2. Build and flash (board connected over USB-C):
+3. Build and flash (board connected over USB-C):
    ```bash
    . ~/esp/esp-idf/export.sh
    idf.py build
    idf.py -p /dev/ttyACM0 flash
    ```
-3. To watch the log output: `idf.py -p /dev/ttyACM0 monitor` (Ctrl+] to exit).
+4. To watch the log output: `idf.py -p /dev/ttyACM0 monitor` (Ctrl+] to exit). At boot it lists
+   the files on the SD card, if one is inserted.
 
 If flashing can't connect, hold **BOOT**, tap **RESET**, release BOOT and try again, then press
 RESET once afterwards to start the app.
+
+### exFAT support
+
+Most microSD cards over 32 GB come formatted as **exFAT**. ESP-IDF supports exFAT, but ships with it
+switched off and has no menuconfig setting for it, so you need to change one line in your ESP-IDF
+install. Edit `$IDF_PATH/components/fatfs/src/ffconf.h` (for example
+`~/esp/esp-idf/components/fatfs/src/ffconf.h`) and change
+
+```c
+#define FF_FS_EXFAT		0
+```
+
+to
+
+```c
+#define FF_FS_EXFAT		1
+```
+
+or run:
+
+```bash
+sed -i 's/^#define FF_FS_EXFAT\t\t0$/#define FF_FS_EXFAT\t\t1/' ~/esp/esp-idf/components/fatfs/src/ffconf.h
+```
+
+The build stops with an error that points here if this hasn't been done. Redo it after updating or
+reinstalling ESP-IDF. (The project's `sdkconfig` also enables `CONFIG_FATFS_USE_LABEL`, which ESP-IDF
+5.5 needs to compile with exFAT on.)
 
 The flash is split into the settings area (NVS), a 6 MB app partition and a ~9.9 MB `storage`
 partition reserved for future use (see `partitions.csv`).
@@ -156,6 +186,7 @@ one as a PNG in `docs/screenshots/`:
 | `main/ticker.c` | Home screen info ticker |
 | `main/settings.c` | Saved settings (NVS) |
 | `main/net_time.c`, `main/rtc.c` | Wi-Fi, NTP time and the RTC chip |
+| `main/sd_card.c` | microSD card (FAT32 / exFAT), mounted at `/sdcard` |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `tools/` | Image generators and the screenshot receiver |
 | `CLAUDE.md` | Detailed developer notes |

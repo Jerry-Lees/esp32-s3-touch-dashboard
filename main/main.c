@@ -6,10 +6,12 @@
  */
 
 #include "waveshare_rgb_lcd_port.h"
+#include "sd_card.h"
 
 void app_main()
 {
     waveshare_esp32_s3_rgb_lcd_init(); // Initialize the Waveshare ESP32-S3 RGB LCD 
+    sd_card_start();                   // Mount the microSD card in the background
     // wavesahre_rgb_lcd_bl_on();  //Turn on the screen backlight 
     // wavesahre_rgb_lcd_bl_off(); //Turn off the screen backlight 
     
