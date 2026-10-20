@@ -7,6 +7,7 @@
 
 #include "waveshare_rgb_lcd_port.h"
 #include "sd_card.h"
+#include "usb_files.h"
 
 void app_main()
 {
@@ -26,6 +27,7 @@ void app_main()
         launcher_start();
 #endif
         sd_card_start();   // mount the microSD card in the background (after Wi-Fi is set up)
+        usb_files_start(); // SD card file transfer over the USB cable (tools/sdcard.py)
         // example_lvgl_demo_ui();
         // Release the mutex
         lvgl_port_unlock();

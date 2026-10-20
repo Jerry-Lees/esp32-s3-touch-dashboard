@@ -85,6 +85,10 @@ A stock watchlist named after the meme, with a diamond-hands icon.
 A slideshow of the pictures in `dashboard/pictures/` on the SD card (and folders inside it, up to
 3 deep), cross-fading between them.
 
+| | |
+|---|---|
+| ![Photos](docs/screenshots/photos.png) | ![A portrait picture, fitted](docs/screenshots/photos_portrait.png) |
+
 - **Formats**: JPEG, PNG, GIF (first frame) and BMP (24/32-bit). Not supported: progressive JPEG,
   interlaced PNG, HEIC and WebP (convert them to JPEG). Unsupported or damaged files are skipped.
 - **Any size**: pictures are shrunk while they're read, so 12+ megapixel phone photos and large PNGs
@@ -98,6 +102,11 @@ A slideshow of the pictures in `dashboard/pictures/` on the SD card (and folders
 
 A file manager for the SD card. It opens in the `dashboard` folder, and **Up** goes as far as the
 top of the card.
+
+| | |
+|---|---|
+| ![Files](docs/screenshots/files.png) | ![File menu](docs/screenshots/files_menu.png) |
+| ![Viewing a picture](docs/screenshots/files_picture.png) | |
 
 - Shows each item's size and date, the number of items, and the card's free space. Sort by name,
   date (newest first) or size (biggest first); folders come first. Large folders are shown 50 at a
@@ -133,7 +142,7 @@ saved in flash.
 |---|---|
 | ![Display settings](docs/screenshots/settings_display.png) | ![Time settings](docs/screenshots/settings_time.png) |
 | ![Weather settings](docs/screenshots/settings_weather.png) | ![St0nks settings](docs/screenshots/settings_stonks.png) |
-| ![About](docs/screenshots/settings_about.png) | |
+| ![About](docs/screenshots/settings_about.png) | ![Screensaver setting](docs/screenshots/settings_screensaver.png) |
 
 Tabs for Network (Wi-Fi status, signal and your saved networks, with Remove), Display (screen timeout, info ticker, FPS meter),
 Time (12/24-hour, time source), Weather (default city, ticker cities), St0nks (show the watchlist
@@ -302,6 +311,32 @@ Long-press an empty part of the top bar on any screen (the display pauses for a 
 
 (Use the Python that comes with ESP-IDF, which has `pyserial`, and close `idf.py monitor` first.)
 
+To copy screenshots from the card without taking it out, see the next section.
+
+## Copying files over USB
+
+`tools/sdcard.py` copies files to and from the SD card while it stays in the display, over the
+same USB cable used for flashing. Only the card's `dashboard/` folder can be reached.
+
+```bash
+PY=~/.espressif/python_env/idf5.5_py3.14_env/bin/python
+$PY tools/sdcard.py ls pictures                  # list a folder (paths are inside dashboard/)
+$PY tools/sdcard.py put *.jpg pictures/          # PC -> card
+$PY tools/sdcard.py get screenshots ./shots      # card -> PC (one file or a whole folder)
+$PY tools/sdcard.py rm pictures/old.jpg          # a file or an empty folder
+$PY tools/sdcard.py mkdir pictures/holiday
+```
+
+- About 200 KB/s each way. Every 2 KB chunk is checked and acknowledged, so a damaged or lost chunk
+  is sent again, and a file is only saved once its whole-file checksum matches. Interrupted copies
+  leave nothing behind.
+- `put` won't replace an existing file unless you add `--force`. File names must be plain ASCII.
+- The display shows a message for each file it receives or deletes.
+- Files named `wifi*.json` are never sent to the PC, and the dashboard's own folders can't be
+  removed. Close `idf.py monitor` and `screenshot.py` first: only one program can use the port.
+- A `wifi.json` put into `import/` is imported (and securely erased) at the next restart, the same
+  as one copied onto the card.
+
 ## Project layout
 
 | Path | What's there |
@@ -318,7 +353,8 @@ Long-press an empty part of the top bar on any screen (the display pauses for a 
 | `main/photo_frame.c`, `main/pic_decode.c` | Slideshow engine (Photos app and screensaver); JPEG/BMP and PNG/GIF decoding |
 | `main/app_files.c` | File manager |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
-| `tools/` | Image generators and the screenshot receiver |
+| `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
+| `tools/` | Image generators, the screenshot receiver and the USB file tool |
 | `CLAUDE.md` | Detailed developer notes |
 
 ## Credits

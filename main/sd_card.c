@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -57,7 +58,7 @@ static bool s_notice_ready;   /* __atomic; the writer only fills an empty slot *
 
 /* SD task only. Waits (up to 3 s) for the screen to take the previous
  * message, so two messages at startup are both shown. */
-static void notice(const char *fmt, ...)
+void sd_card_notice(const char *fmt, ...)
 {
     for (int i = 0; i < 30 && __atomic_load_n(&s_notice_ready, __ATOMIC_ACQUIRE); i++) {
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -69,6 +70,15 @@ static void notice(const char *fmt, ...)
     va_end(ap);
     ESP_LOGI(TAG, "%s", s_notice);
     __atomic_store_n(&s_notice_ready, true, __ATOMIC_RELEASE);
+}
+
+bool sd_card_is_secret_name(const char *name)
+{
+    if (strncasecmp(name, "wifi", 4) != 0) return false;
+    for (const char *p = name; *p; p++) {
+        if (!strncasecmp(p, ".json", 5)) return true;
+    }
+    return false;
 }
 
 bool sd_card_take_notice(char *out, size_t len)
@@ -89,19 +99,25 @@ static const char *const FOLDERS[] = {
 static const char README_TXT[] =
     "ESP32-S3 Touch Dashboard - SD card folders\r\n"
     "==========================================\r\n"
-    "The display creates these folders and never touches anything outside\r\n"
-    "this one. See README.md on GitHub (Jerry-Lees/esp32-s3-touch-dashboard).\r\n"
+    "The display creates these folders and only changes files in them (it\r\n"
+    "rewrites this README when it's out of date). See README.md on GitHub\r\n"
+    "(Jerry-Lees/esp32-s3-touch-dashboard).\r\n"
     "\r\n"
-    "import\\       One-time inbox. Files here are read at startup, applied,\r\n"
-    "              then erased. Example: wifi.json (Wi-Fi networks, up to 10).\r\n"
-    "              It is overwritten with blanks and deleted after import, so\r\n"
-    "              passwords don't stay on the card.\r\n"
-    "pictures\\     Photos (for a future photo frame).\r\n"
-    "screenshots\\  Screenshots: long-press the top bar on any screen.\r\n"
-    "backup\\       Settings backups (Settings > About > Back up settings). They\r\n"
+    "import/       One-time inbox. Files here are read at startup, applied,\r\n"
+    "              then erased. wifi.json (Wi-Fi networks, up to 10) is\r\n"
+    "              overwritten with blanks and deleted after import, so\r\n"
+    "              passwords don't stay on the card. settings*.json restores\r\n"
+    "              a settings backup.\r\n"
+    "pictures/     Pictures for the Photos app and the photo screensaver:\r\n"
+    "              JPEG, PNG, GIF or BMP (folders inside are included).\r\n"
+    "screenshots/  Screenshots: long-press the top bar on any screen.\r\n"
+    "backup/       Settings backups (Settings > About > Back up settings). They\r\n"
     "              never include Wi-Fi networks. To restore one, copy it into\r\n"
-    "              import\\ and restart the display.\r\n"
-    "apps\\         Reserved for apps loaded from the card.\r\n";
+    "              import/ and restart the display.\r\n"
+    "apps/         Reserved for apps loaded from the card.\r\n"
+    "\r\n"
+    "Files can be copied to and from these folders over the USB cable,\r\n"
+    "without taking the card out: tools/sdcard.py in the project.\r\n";
 
 static void make_folders(void)
 {
@@ -110,9 +126,16 @@ static void make_folders(void)
             ESP_LOGW(TAG, "Couldn't create %s", FOLDERS[i]);
         }
     }
-    struct stat st;
-    if (stat(SD_DIR "/README.txt", &st) != 0) {
-        FILE *f = fopen(SD_DIR "/README.txt", "w");
+    /* (Re)write README.txt unless it's already this version. */
+    char old[sizeof(README_TXT) + 1];
+    size_t n = 0;
+    FILE *f = fopen(SD_DIR "/README.txt", "rb");
+    if (f) {
+        n = fread(old, 1, sizeof(old), f);
+        fclose(f);
+    }
+    if (n != sizeof(README_TXT) - 1 || memcmp(old, README_TXT, n) != 0) {
+        f = fopen(SD_DIR "/README.txt", "wb");
         if (f) {
             fwrite(README_TXT, 1, sizeof(README_TXT) - 1, f);
             fclose(f);
@@ -233,7 +256,7 @@ static void import_wifi(void)
     if (!path) return;
 
     if (st.st_size <= 0 || st.st_size > WIFI_JSON_MAX) {
-        notice("wifi.json not imported: the file is %s", st.st_size <= 0 ? "empty" : "too big");
+        sd_card_notice("wifi.json not imported: the file is %s", st.st_size <= 0 ? "empty" : "too big");
         return;
     }
     char *text = heap_caps_calloc(1, st.st_size + 1, MALLOC_CAP_SPIRAM);
@@ -249,19 +272,19 @@ static void import_wifi(void)
     free(text);
 
     if (n < 0) {
-        notice("wifi.json not imported: %s", err[0] ? err : "couldn't read it");
+        sd_card_notice("wifi.json not imported: %s", err[0] ? err : "couldn't read it");
     } else {
         int added = 0;
         for (int i = 0; i < n; i++) added += !wifi_list_contains(nets[i].ssid);
         if (wifi_list_count() + added > WIFI_LIST_MAX) {
-            notice("wifi.json not imported: that would make %d saved networks (max %d). "
+            sd_card_notice("wifi.json not imported: that would make %d saved networks (max %d). "
                    "Remove some in Settings > Network first.",
                    wifi_list_count() + added, WIFI_LIST_MAX);
         } else if (!wifi_list_add(nets, n)) {
-            notice("wifi.json not imported: saving failed");
+            sd_card_notice("wifi.json not imported: saving failed");
         } else {
             bool deleted = secure_delete(path);
-            notice("Imported %d Wi-Fi network%s from the SD card%s", n, n == 1 ? "" : "s",
+            sd_card_notice("Imported %d Wi-Fi network%s from the SD card%s", n, n == 1 ? "" : "s",
                    deleted ? "" : " (couldn't delete wifi.json: delete it by hand!)");
             net_time_networks_changed();
         }
@@ -310,7 +333,7 @@ static void mount_task(void *arg)
         ESP_LOGI(TAG, "Mounted at " SD_MOUNT_POINT);
         make_folders();
         import_wifi();
-        if (settings_backup_import(notice)) {
+        if (settings_backup_import(sd_card_notice)) {
             vTaskDelay(pdMS_TO_TICKS(4000));      /* time to read the message */
             esp_restart();                       /* every app reloads its settings */
         }

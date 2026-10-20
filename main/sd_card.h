@@ -21,6 +21,14 @@ void sd_card_start(void);
  * once: copies it into out and returns true if there's a new one. */
 bool sd_card_take_notice(char *out, size_t len);
 
+/* Queues a message for the screen (any task). Waits up to 3 s for the
+ * previous one to be shown; drops this one if it's still there. */
+void sd_card_notice(const char *fmt, ...);
+
+/* True for names like wifi.json / wifi.json.txt / wifi-home.json, which may
+ * hold Wi-Fi passwords: never show or send their contents. */
+bool sd_card_is_secret_name(const char *name);
+
 /* True once the card is mounted and files can be read. */
 bool sd_card_mounted(void);
 

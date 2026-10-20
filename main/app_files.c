@@ -335,16 +335,6 @@ static bool is_text_name(const char *n)
     return false;
 }
 
-/* wifi.json / wifi.json.txt / wifi-home.json ...: may hold Wi-Fi passwords. */
-static bool is_secret_name(const char *n)
-{
-    if (strncasecmp(n, "wifi", 4) != 0) return false;
-    for (const char *p = n; *p; p++) {
-        if (!strncasecmp(p, ".json", 5)) return true;
-    }
-    return false;
-}
-
 /* The font is ASCII only (names are code page 437 on the card). */
 static void ascii(char *out, size_t len, const char *in)
 {
@@ -802,7 +792,7 @@ static void text_done(void)
 static void show_text(int i, bool hex)
 {
     char path[PATH_LEN], name[NAME_LEN];
-    if (is_secret_name(s_ent[i].name)) {
+    if (sd_card_is_secret_name(s_ent[i].name)) {
         launcher_toast("This file may hold Wi-Fi passwords, so it isn't shown", 5000);
         return;
     }
