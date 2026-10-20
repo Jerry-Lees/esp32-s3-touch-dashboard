@@ -23,7 +23,7 @@ Nothing else is attached; it's powered and programmed over its USB-C port.
 | Touch | **GT911** capacitive touch (I2C: SDA GPIO8, SCL GPIO9, INT GPIO4) |
 | I/O expander | **CH422G** on the same I2C bus: touch reset, LCD backlight (on/off only, no dimming), SD card chip select, 2 isolated digital inputs and 2 open-drain outputs |
 | Clock | **PCF85063** real-time clock on I2C. A backup battery can be fitted but isn't in this unit, so it keeps time across resets and reflashes but not power loss |
-| microSD | Card slot on SPI (MOSI GPIO11, CLK GPIO12, MISO GPIO13; chip select via the CH422G). FAT32 and exFAT cards are mounted at boot; nothing uses the files yet |
+| microSD | Card slot on SPI (MOSI GPIO11, CLK GPIO12, MISO GPIO13; chip select via the CH422G). FAT32 and exFAT cards; used for Wi-Fi network import (see [SD card](#sd-card)) |
 | Also on the board (not used yet) | RS485, CAN, digital in/out terminals |
 | USB | USB-C to the ESP32-S3's built-in USB-Serial/JTAG (shows up as `/dev/ttyACM0` on Linux) |
 
@@ -104,7 +104,7 @@ saved in flash.
 | ![Weather settings](docs/screenshots/settings_weather.png) | ![St0nks settings](docs/screenshots/settings_stonks.png) |
 | ![About](docs/screenshots/settings_about.png) | |
 
-Tabs for Network (Wi-Fi status and signal), Display (screen timeout, info ticker, FPS meter),
+Tabs for Network (Wi-Fi status, signal and your saved networks, with Remove), Display (screen timeout, info ticker, FPS meter),
 Time (12/24-hour, time source), Weather (default city, ticker cities), St0nks (show the watchlist
 in the ticker) and About (chip, memory, versions). Settings are stored in the ESP32's NVS flash
 area and survive reboots and reflashing.
@@ -115,8 +115,9 @@ You need [ESP-IDF v5.5](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp3
 LVGL 8.4 and the touch drivers are included in `components/`.
 
 1. **Enable exFAT in ESP-IDF** (one-time; see [exFAT support](#exfat-support) below).
-2. Create `main/wifi_secrets.h` with your Wi-Fi details (2.4 GHz networks only). This file is in
-   `.gitignore` so it never gets committed:
+2. *Optional:* create `main/wifi_secrets.h` with a built-in Wi-Fi network (2.4 GHz only). This
+   file is in `.gitignore` so it never gets committed. You can skip it and add networks from the
+   SD card instead (see [Wi-Fi networks](#wi-fi-networks)).
    ```c
    #pragma once
    #define WIFI_SSID     "your network name"
@@ -128,8 +129,8 @@ LVGL 8.4 and the touch drivers are included in `components/`.
    idf.py build
    idf.py -p /dev/ttyACM0 flash
    ```
-4. To watch the log output: `idf.py -p /dev/ttyACM0 monitor` (Ctrl+] to exit). At boot it lists
-   the files on the SD card, if one is inserted.
+4. To watch the log output: `idf.py -p /dev/ttyACM0 monitor` (Ctrl+] to exit). The log shows
+   your Wi-Fi network's name and IP address, so don't paste it anywhere public.
 
 If flashing can't connect, hold **BOOT**, tap **RESET**, release BOOT and try again, then press
 RESET once afterwards to start the app.
@@ -164,6 +165,70 @@ reinstalling ESP-IDF. (The project's `sdkconfig` also enables `CONFIG_FATFS_USE_
 The flash is split into the settings area (NVS), a 6 MB app partition and a ~9.9 MB `storage`
 partition reserved for future use (see `partitions.csv`).
 
+## SD card
+
+Insert a microSD card (FAT32 or exFAT) and restart the display (it only checks for a card at
+startup). It creates one folder, `dashboard`, and never touches anything else on the card:
+
+| Folder | What it's for |
+|---|---|
+| `dashboard/import/` | One-time inbox. Files here are read at startup, applied, then **erased**. |
+| `dashboard/pictures/` | Photos (for a future photo frame). |
+| `dashboard/screenshots/` | Screenshots (coming soon). |
+| `dashboard/backup/` | Settings backups (never include Wi-Fi passwords). |
+| `dashboard/apps/` | Reserved for apps loaded from the card. |
+
+A `README.txt` in the `dashboard` folder explains the same thing.
+
+### Wi-Fi networks
+
+The display can remember up to **10 Wi-Fi networks** and connects to the **strongest one in range**,
+so it can move between home, work and a phone hotspot. (2.4 GHz networks only; hidden networks
+aren't supported.) A network set in `main/wifi_secrets.h` is also used, as a built-in extra.
+
+**To add networks:**
+
+1. With the card in your PC, create a plain text file named **`wifi.json`** in the
+   `dashboard/import/` folder (insert the card in the display once first, so the folder exists).
+   Use a plain text editor (Notepad, gedit, VS Code), not a word processor:
+
+   ```json
+   {
+     "networks": [
+       { "ssid": "Home-Network",  "password": "home password" },
+       { "ssid": "Work-Guest",    "password": "work password" },
+       { "ssid": "Coffee-Shop",   "password": "" }
+     ]
+   }
+   ```
+
+   - `ssid` is the network name, exactly as it appears on your phone (capitals matter).
+   - `password` is 8-63 characters, or `""` for an open network.
+   - Watch the punctuation: quotes around every name and password, a comma between networks,
+     and no comma after the last one.
+   - If Windows saves it as `wifi.json.txt`, that's fine too.
+2. Put the card in the display and restart it (press **RESET** or unplug it for a moment).
+3. A message at the bottom of the screen says **"Imported N Wi-Fi networks from the SD card"**.
+   The networks now appear in **Settings > Network**.
+
+**What happens to the file:** once the networks are saved inside the display, `wifi.json` is
+**overwritten with blanks and then deleted**, so the passwords don't stay on the card (a plain
+delete would leave them recoverable with undelete tools). The display doesn't need the file
+after that, and the card can be removed.
+
+**If something's wrong** (a typo in the file, a password that's too short, or more than 10
+networks in total), nothing is imported, the file is left on the card, and a message on screen
+says what to fix.
+
+**To change a password:** import a `wifi.json` with the same network name and the new password.
+
+**To remove a network:** **Settings > Network**, tap **Remove** next to it and confirm. It's
+deleted from the display's memory straight away, and if it was the network in use, the display
+switches to another saved network.
+
+Saved networks live in the ESP32's internal NVS storage, like the other settings. That storage
+isn't encrypted, so treat the device itself like anything else that knows your Wi-Fi password.
+
 ## Taking screenshots
 
 Long-press an empty part of the top bar on any screen: the device sends that screen over the USB
@@ -186,7 +251,8 @@ one as a PNG in `docs/screenshots/`:
 | `main/ticker.c` | Home screen info ticker |
 | `main/settings.c` | Saved settings (NVS) |
 | `main/net_time.c`, `main/rtc.c` | Wi-Fi, NTP time and the RTC chip |
-| `main/sd_card.c` | microSD card (FAT32 / exFAT), mounted at `/sdcard` |
+| `main/sd_card.c` | microSD card (FAT32 / exFAT): `dashboard` folders and the import inbox |
+| `main/wifi_list.c` | Saved Wi-Fi networks (up to 10, in NVS) |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `tools/` | Image generators and the screenshot receiver |
 | `CLAUDE.md` | Detailed developer notes |

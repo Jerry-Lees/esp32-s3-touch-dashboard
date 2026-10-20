@@ -650,7 +650,7 @@ static void update_status(void)
     }
 
     const char *msg;
-    if (!net_time_wifi_configured())       msg = "Wi-Fi is not set up (see wifi_secrets.h)";
+    if (!net_time_wifi_configured())       msg = "Wi-Fi is not set up (see Settings > Network)";
     else if (!net_time_wifi_connected())   msg = "Waiting for Wi-Fi...";
     else if (!net_time_is_synced())        msg = "Waiting for the clock to sync...";
     else if (s_error[s_sel] && !busy)      msg = "Couldn't load the weather. Retrying...";

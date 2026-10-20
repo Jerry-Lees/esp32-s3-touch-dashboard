@@ -86,7 +86,7 @@ static void update_clocks(lv_timer_t *t)
 
     if (!net_time_is_synced()) {
         if (!net_time_wifi_configured()) {
-            show_waiting("Set Wi-Fi in wifi_secrets.h");
+            show_waiting("No Wi-Fi: see Settings > Network");
         } else if (!net_time_wifi_connected()) {
             show_waiting("Connecting to Wi-Fi...");
         } else {

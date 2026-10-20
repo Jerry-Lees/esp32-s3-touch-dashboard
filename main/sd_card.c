@@ -1,22 +1,30 @@
 /*
- * microSD card: mount at boot and log what's on it. Never formats the card,
- * even if mounting fails.
+ * microSD card: mount at boot, create the /dashboard folders and process
+ * /dashboard/import. Never formats the card, even if mounting fails, and
+ * never touches anything outside /dashboard.
  */
-#include <dirent.h>
+#include <ctype.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_common.h"
+#include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include "sdmmc_cmd.h"
 
+#include "net_time.h"
 #include "sd_card.h"
+#include "wifi_list.h"
 
 /* Most cards over 32 GB come formatted as exFAT, which ESP-IDF ships
  * switched off. See "exFAT support" in README.md. */
@@ -27,7 +35,6 @@
 #define PIN_MOSI  11
 #define PIN_CLK   12
 #define PIN_MISO  13
-#define SHOW_MAX  2048   /* log the contents of small files up to this size */
 
 static const char *TAG = "sd_card";
 
@@ -39,38 +46,216 @@ bool sd_card_mounted(void)
     return __atomic_load_n(&s_mounted, __ATOMIC_ACQUIRE);
 }
 
-/* Logs the files in the card's top folder; small ones with their text. */
-static void log_root(void)
+/* ---------- messages for the screen ---------- */
+
+static char s_notice[160];
+static bool s_notice_ready;   /* __atomic; the writer only fills an empty slot */
+
+static void notice(const char *fmt, ...)
 {
-    DIR *dir = opendir(SD_MOUNT_POINT);
-    if (!dir) {
-        ESP_LOGW(TAG, "Could not open the card's top folder");
+    if (__atomic_load_n(&s_notice_ready, __ATOMIC_ACQUIRE)) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_notice, sizeof(s_notice), fmt, ap);
+    va_end(ap);
+    ESP_LOGI(TAG, "%s", s_notice);
+    __atomic_store_n(&s_notice_ready, true, __ATOMIC_RELEASE);
+}
+
+bool sd_card_take_notice(char *out, size_t len)
+{
+    if (!__atomic_load_n(&s_notice_ready, __ATOMIC_ACQUIRE)) return false;
+    strlcpy(out, s_notice, len);
+    __atomic_store_n(&s_notice_ready, false, __ATOMIC_RELEASE);
+    return true;
+}
+
+/* ---------- /dashboard folder layout ---------- */
+
+static const char *const FOLDERS[] = {
+    SD_DIR, SD_DIR "/import", SD_DIR "/pictures", SD_DIR "/screenshots",
+    SD_DIR "/backup", SD_DIR "/apps",
+};
+
+static const char README_TXT[] =
+    "ESP32-S3 Touch Dashboard - SD card folders\r\n"
+    "==========================================\r\n"
+    "The display creates these folders and never touches anything outside\r\n"
+    "this one. See README.md on GitHub (Jerry-Lees/esp32-s3-touch-dashboard).\r\n"
+    "\r\n"
+    "import\\       One-time inbox. Files here are read at startup, applied,\r\n"
+    "              then erased. Example: wifi.json (Wi-Fi networks, up to 10).\r\n"
+    "              It is overwritten with blanks and deleted after import, so\r\n"
+    "              passwords don't stay on the card.\r\n"
+    "pictures\\     Photos (for a future photo frame).\r\n"
+    "screenshots\\  Screenshots (coming soon).\r\n"
+    "backup\\       Settings backups (never include Wi-Fi passwords).\r\n"
+    "apps\\         Reserved for apps loaded from the card.\r\n";
+
+static void make_folders(void)
+{
+    for (size_t i = 0; i < sizeof(FOLDERS) / sizeof(FOLDERS[0]); i++) {
+        if (mkdir(FOLDERS[i], 0775) != 0 && errno != EEXIST) {
+            ESP_LOGW(TAG, "Couldn't create %s", FOLDERS[i]);
+        }
+    }
+    struct stat st;
+    if (stat(SD_DIR "/README.txt", &st) != 0) {
+        FILE *f = fopen(SD_DIR "/README.txt", "w");
+        if (f) {
+            fwrite(README_TXT, 1, sizeof(README_TXT) - 1, f);
+            fclose(f);
+        }
+    }
+}
+
+/* ---------- import/wifi.json ---------- */
+
+#define WIFI_JSON_MAX 8192
+
+/* Overwrites the whole file with zeros, then deletes it, so the passwords
+ * can't be recovered with an undelete tool. */
+static bool secure_delete(const char *path)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+    static const uint8_t zeros[512];
+    for (long done = 0; done < size; ) {
+        size_t n = size - done < (long)sizeof(zeros) ? size - done : sizeof(zeros);
+        if (fwrite(zeros, 1, n, f) != n) break;
+        done += n;
+    }
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+    return unlink(path) == 0;
+}
+
+/* Blanks every string in the parsed JSON before it's freed. */
+static void wipe_json(cJSON *j)
+{
+    for (; j; j = j->next) {
+        if (cJSON_IsString(j) && j->valuestring) {
+            memset(j->valuestring, 0, strlen(j->valuestring));
+        }
+        wipe_json(j->child);
+    }
+}
+
+static bool valid_password(const char *p)
+{
+    size_t n = strlen(p);
+    if (n == 0 || (n >= 8 && n <= 63)) return true;   /* open, or a WPA passphrase */
+    if (n != 64) return false;
+    for (size_t i = 0; i < n; i++) {                   /* 64 = raw hex key */
+        if (!isxdigit((unsigned char)p[i])) return false;
+    }
+    return true;
+}
+
+/* Parses and checks the file; fills nets and returns the count, or -1 with
+ * a reason in err. */
+static int parse_wifi_json(const char *text, wifi_net_t *nets, char *err, size_t errlen)
+{
+    cJSON *root = cJSON_Parse(text);
+    if (!root) {
+        snprintf(err, errlen, "it isn't valid JSON (check commas and quotes)");
+        return -1;
+    }
+    int n = -1;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(root, "networks");
+    if (!cJSON_IsArray(list)) {
+        snprintf(err, errlen, "it needs a \"networks\" list");
+    } else if (cJSON_GetArraySize(list) == 0) {
+        snprintf(err, errlen, "the \"networks\" list is empty");
+    } else if (cJSON_GetArraySize(list) > WIFI_LIST_MAX) {
+        snprintf(err, errlen, "it has more than %d networks", WIFI_LIST_MAX);
+    } else {
+        n = 0;
+        const cJSON *it;
+        cJSON_ArrayForEach(it, list) {
+            const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(it, "ssid");
+            const cJSON *pass = cJSON_GetObjectItemCaseSensitive(it, "password");
+            if (!cJSON_IsString(ssid) || !ssid->valuestring[0] ||
+                strlen(ssid->valuestring) > WIFI_SSID_MAX) {
+                snprintf(err, errlen, "network %d needs an \"ssid\" of 1-%d characters",
+                         n + 1, WIFI_SSID_MAX);
+                n = -1;
+                break;
+            }
+            if (pass && !cJSON_IsString(pass)) {
+                snprintf(err, errlen, "the password for \"%s\" must be in quotes",
+                         ssid->valuestring);
+                n = -1;
+                break;
+            }
+            const char *pw = pass ? pass->valuestring : "";
+            if (!valid_password(pw)) {
+                snprintf(err, errlen, "the password for \"%s\" must be 8-63 characters "
+                         "(or empty for an open network)", ssid->valuestring);
+                n = -1;
+                break;
+            }
+            strlcpy(nets[n].ssid, ssid->valuestring, sizeof(nets[n].ssid));
+            strlcpy(nets[n].pass, pw, sizeof(nets[n].pass));
+            n++;
+        }
+    }
+    wipe_json(root);
+    cJSON_Delete(root);
+    return n;
+}
+
+static void import_wifi(void)
+{
+    /* Windows may hide a ".txt" that Notepad added. */
+    static const char *const names[] = { SD_DIR "/import/wifi.json",
+                                         SD_DIR "/import/wifi.json.txt" };
+    const char *path = NULL;
+    struct stat st;
+    for (size_t i = 0; i < 2 && !path; i++) {
+        if (stat(names[i], &st) == 0) path = names[i];
+    }
+    if (!path) return;
+
+    if (st.st_size <= 0 || st.st_size > WIFI_JSON_MAX) {
+        notice("wifi.json not imported: the file is %s", st.st_size <= 0 ? "empty" : "too big");
         return;
     }
-    int count = 0;
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        char path[300];
-        snprintf(path, sizeof(path), SD_MOUNT_POINT "/%s", de->d_name);
-        struct stat st;
-        bool is_dir = de->d_type == DT_DIR;
-        long size = (!is_dir && stat(path, &st) == 0) ? (long)st.st_size : 0;
-        count++;
-        ESP_LOGI(TAG, "  %s%s  (%s%ld bytes)", de->d_name, is_dir ? "/" : "",
-                 is_dir ? "folder, " : "", size);
-        if (is_dir || size <= 0 || size > SHOW_MAX) continue;
+    char *text = heap_caps_calloc(1, st.st_size + 1, MALLOC_CAP_SPIRAM);
+    static wifi_net_t nets[WIFI_LIST_MAX];
+    if (!text) return;
+    FILE *f = fopen(path, "r");
+    size_t len = f ? fread(text, 1, st.st_size, f) : 0;
+    if (f) fclose(f);
 
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        char buf[SHOW_MAX + 1];
-        size_t n = fread(buf, 1, SHOW_MAX, f);
-        fclose(f);
-        buf[n] = '\0';
-        printf("----- start of %s -----\n%s\n----- end of %s -----\n", de->d_name, buf,
-               de->d_name);
+    char err[120] = "";
+    int n = len > 0 ? parse_wifi_json(text, nets, err, sizeof(err)) : -1;
+    memset(text, 0, st.st_size + 1);
+    free(text);
+
+    if (n < 0) {
+        notice("wifi.json not imported: %s", err[0] ? err : "couldn't read it");
+    } else {
+        int added = 0;
+        for (int i = 0; i < n; i++) added += !wifi_list_contains(nets[i].ssid);
+        if (wifi_list_count() + added > WIFI_LIST_MAX) {
+            notice("wifi.json not imported: that would make %d saved networks (max %d). "
+                   "Remove some in Settings > Network first.",
+                   wifi_list_count() + added, WIFI_LIST_MAX);
+        } else if (!wifi_list_add(nets, n)) {
+            notice("wifi.json not imported: saving failed");
+        } else {
+            bool deleted = secure_delete(path);
+            notice("Imported %d Wi-Fi network%s from the SD card%s", n, n == 1 ? "" : "s",
+                   deleted ? "" : " (couldn't delete wifi.json: delete it by hand!)");
+            net_time_networks_changed();
+        }
     }
-    closedir(dir);
-    ESP_LOGI(TAG, "%d item(s) in the top folder", count);
+    memset(nets, 0, sizeof(nets));
 }
 
 static void mount_task(void *arg)
@@ -111,12 +296,13 @@ static void mount_task(void *arg)
         sdmmc_card_print_info(stdout, s_card);
         __atomic_store_n(&s_mounted, true, __ATOMIC_RELEASE);
         ESP_LOGI(TAG, "Mounted at " SD_MOUNT_POINT);
-        log_root();
+        make_folders();
+        import_wifi();
     }
     vTaskDelete(NULL);
 }
 
 void sd_card_start(void)
 {
-    xTaskCreate(mount_task, "sd_card", 6144, NULL, 2, NULL);
+    xTaskCreate(mount_task, "sd_card", 8192, NULL, 2, NULL);
 }

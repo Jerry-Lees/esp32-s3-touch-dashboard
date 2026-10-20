@@ -7,6 +7,7 @@
  * so no extra locking is needed.
  */
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "lvgl.h"
@@ -15,7 +16,9 @@
 #include "net_time.h"
 #include "settings.h"
 #include "screenshot.h"
+#include "sd_card.h"
 #include "ticker.h"
+#include "wifi_list.h"
 #include "esp_err.h"
 
 /* Backlight helpers from waveshare_rgb_lcd_port.c (declared here because that
@@ -426,6 +429,74 @@ void launcher_apply_fps(void)
     }
 }
 
+/* ---------- messages from background tasks ----------
+ * A rounded banner near the bottom of the screen, above everything, that
+ * goes away by itself (tap to dismiss sooner).
+ */
+
+static lv_obj_t   *s_toast;
+static lv_timer_t *s_toast_timer;
+
+static void toast_close(lv_timer_t *t)
+{
+    (void)t;
+    if (s_toast) {
+        lv_obj_del(s_toast);
+        s_toast = NULL;
+    }
+    s_toast_timer = NULL;   /* one-shot: LVGL deletes it after this */
+}
+
+static void toast_clicked(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_del_async(s_toast);
+    s_toast = NULL;
+}
+
+void launcher_toast(const char *text, uint32_t ms)
+{
+    if (s_toast) lv_obj_del(s_toast);
+    if (s_toast_timer) lv_timer_del(s_toast_timer);
+    s_toast = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(s_toast, 740, 0);
+    lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -24);
+    lv_obj_set_style_radius(s_toast, 16, 0);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(0x263238), 0);
+    lv_obj_set_style_bg_opa(s_toast, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_toast, lv_color_hex(0x42A5F5), 0);
+    lv_obj_set_style_border_width(s_toast, 2, 0);
+    lv_obj_set_style_pad_hor(s_toast, 24, 0);
+    lv_obj_set_style_pad_ver(s_toast, 16, 0);
+    lv_obj_set_style_shadow_width(s_toast, 24, 0);
+    lv_obj_set_style_shadow_opa(s_toast, LV_OPA_50, 0);
+    lv_obj_clear_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_toast, toast_clicked, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *l = lv_label_create(s_toast);
+    lv_label_set_text(l, text);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_max_width(l, 692, 0);
+    lv_obj_set_width(l, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_font(l, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(APP_COLOR_TEXT), 0);
+
+    s_toast_timer = lv_timer_create(toast_close, ms, NULL);
+    lv_timer_set_repeat_count(s_toast_timer, 1);
+}
+
+static void notice_tick(lv_timer_t *t)
+{
+    (void)t;
+    char msg[160];
+    if (sd_card_take_notice(msg, sizeof(msg))) {
+        /* Problems stay up longer so there's time to read them. */
+        launcher_toast(msg, strstr(msg, "not imported") ? 15000 : 6000);
+    }
+}
+
 /* Runs until the meter exists, then applies the setting once. */
 static void fps_init_tick(lv_timer_t *t)
 {
@@ -438,10 +509,12 @@ static void fps_init_tick(lv_timer_t *t)
 void launcher_start(void)
 {
     settings_init();   /* also initializes NVS, before Wi-Fi needs it */
+    wifi_list_init();
     net_time_start();
     build_home();
     lv_scr_load(s_home_scr);
     lv_timer_create(screen_timeout_tick, 1000, NULL);
     lv_timer_create(fps_init_tick, 5, NULL);
     lv_timer_create(ticker_service_tick, 1000, NULL);
+    lv_timer_create(notice_tick, 500, NULL);
 }

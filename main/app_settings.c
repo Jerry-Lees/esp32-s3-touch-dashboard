@@ -22,9 +22,11 @@
 
 #include "lvgl.h"
 #include "app_framework.h"
+#include "game_common.h"
 #include "launcher.h"
 #include "net_time.h"
 #include "settings.h"
+#include "wifi_list.h"
 
 #define C_ACCENT   0x42A5F5
 #define C_BUTTON   0x2A333C
@@ -44,7 +46,11 @@ static const char *s_city_map[MAX_CITIES + MAX_CITIES / 2 + 1];
 static lv_timer_t *s_timer;
 
 static struct {
+    lv_obj_t *root;
     lv_obj_t *net_status, *net_ssid, *net_signal, *net_ip;
+    lv_obj_t *net_title, *net_list;
+    uint32_t  net_version;
+    char      net_shown[WIFI_SSID_MAX + 1];   /* connected network when the list was drawn */
     lv_obj_t *time_preview, *time_source;
     lv_obj_t *about_heap, *about_psram, *about_uptime;
 } ui;
@@ -178,13 +184,25 @@ static const char *signal_word(int rssi)
     return "Weak";
 }
 
+static void rebuild_net_list(void);
+
 static void update_network(void)
 {
     char buf[64];
 
+    /* Redraw the saved list when it changes or we connect elsewhere. */
+    char cur[WIFI_SSID_MAX + 1] = "";
+    wifi_ap_record_t cur_ap;
+    if (net_time_wifi_connected() && esp_wifi_sta_get_ap_info(&cur_ap) == ESP_OK) {
+        strlcpy(cur, (const char *)cur_ap.ssid, sizeof(cur));
+    }
+    if (ui.net_list && (wifi_list_version() != ui.net_version || strcmp(cur, ui.net_shown) != 0)) {
+        rebuild_net_list();
+    }
+
     if (!net_time_wifi_configured()) {
         lv_label_set_text(ui.net_status, "Not set up");
-        lv_label_set_text(ui.net_ssid, "(edit wifi_secrets.h)");
+        lv_label_set_text(ui.net_ssid, "(no saved networks)");
         lv_label_set_text(ui.net_signal, "-");
         lv_label_set_text(ui.net_ip, "-");
         return;
@@ -360,6 +378,110 @@ static void city_changed(lv_event_t *e)
 
 /* ---------- tabs ---------- */
 
+/* ---------- saved networks ---------- */
+
+static char s_row_ssid[WIFI_LIST_MAX][WIFI_SSID_MAX + 1];
+static char s_remove_ssid[WIFI_SSID_MAX + 1];
+
+static void remove_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    game_dialog_close();
+    if (!yes) return;
+    if (wifi_list_remove(s_remove_ssid)) {
+        net_time_networks_changed();     /* drops the connection if it was this one */
+        char msg[80];
+        snprintf(msg, sizeof(msg), "Removed \"%s\"", s_remove_ssid);
+        launcher_toast(msg, 4000);
+    }
+    rebuild_net_list();
+}
+
+static void remove_clicked(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    strlcpy(s_remove_ssid, s_row_ssid[i], sizeof(s_remove_ssid));
+    char title[64];
+    snprintf(title, sizeof(title), "Forget \"%s\"?", s_remove_ssid);
+    lv_obj_t *row = game_dialog_open(ui.root, title);
+    game_dialog_button(row, LV_SYMBOL_TRASH "  Remove", remove_answer, (void *)1);
+    game_dialog_button(row, "Cancel", remove_answer, NULL);
+}
+
+/* One network: name, a "Connected"/"Built-in" tag, and Remove (index >= 0). */
+static void mk_net_row(const char *ssid, bool connected, const char *tag, int index)
+{
+    lv_obj_t *r = lv_obj_create(ui.net_list);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, LV_PCT(100), 56);
+    lv_obj_set_style_radius(r, 10, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(0x232D36), 0);
+    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(r, 14, 0);
+    lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *n = mk_label(r, APP_FONT_MEDIUM, APP_COLOR_TEXT, "");
+    lv_label_set_text_fmt(n, LV_SYMBOL_WIFI "  %s", ssid);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(n, 380);
+    lv_obj_align(n, LV_ALIGN_LEFT_MID, 0, 0);
+
+    const char *t = connected ? LV_SYMBOL_OK " Connected" : tag;
+    if (t) {
+        lv_obj_t *tl = mk_label(r, LV_FONT_DEFAULT, connected ? 0x66BB6A : APP_COLOR_SUBTEXT, t);
+        lv_obj_align(tl, LV_ALIGN_RIGHT_MID, index >= 0 ? -150 : 0, 0);
+    }
+
+    if (index >= 0) {
+        strlcpy(s_row_ssid[index], ssid, sizeof(s_row_ssid[index]));
+        lv_obj_t *b = lv_btn_create(r);
+        lv_obj_set_size(b, 136, 42);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_radius(b, 10, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x5D1F1F), 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        lv_obj_add_event_cb(b, remove_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+        lv_obj_t *bl = mk_label(b, APP_FONT_MEDIUM, APP_COLOR_TEXT, LV_SYMBOL_TRASH "  Remove");
+        lv_obj_center(bl);
+    }
+}
+
+static void rebuild_net_list(void)
+{
+    ui.net_version = wifi_list_version();
+    ui.net_shown[0] = '\0';
+    wifi_ap_record_t ap;
+    if (net_time_wifi_connected() && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        strlcpy(ui.net_shown, (const char *)ap.ssid, sizeof(ui.net_shown));
+    }
+
+    lv_obj_clean(ui.net_list);
+    int n = wifi_list_count();
+    const char *b = net_time_builtin_ssid();
+    bool show_builtin = b && !wifi_list_contains(b);
+    /* The built-in network doesn't use one of the WIFI_LIST_MAX slots. */
+    if (show_builtin) {
+        lv_label_set_text_fmt(ui.net_title, "Saved networks: %d of %d  (+ 1 built-in)",
+                              n, WIFI_LIST_MAX);
+    } else {
+        lv_label_set_text_fmt(ui.net_title, "Saved networks: %d of %d", n, WIFI_LIST_MAX);
+    }
+    char ssid[WIFI_SSID_MAX + 1];
+    for (int i = 0; i < n; i++) {
+        if (wifi_list_ssid(i, ssid, sizeof(ssid))) {
+            mk_net_row(ssid, strcmp(ssid, ui.net_shown) == 0, NULL, i);
+        }
+    }
+    /* The wifi_secrets.h network can't be removed here; a saved network
+     * with the same name takes its place. */
+    if (show_builtin) {
+        mk_net_row(b, strcmp(b, ui.net_shown) == 0, "Built-in", -1);
+    }
+    if (n == 0 && !b) {
+        mk_label(ui.net_list, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT, "No networks yet.");
+    }
+}
+
 static void build_network_tab(lv_obj_t *tab)
 {
     lv_obj_t *p = mk_panel(tab);
@@ -368,11 +490,19 @@ static void build_network_tab(lv_obj_t *tab)
     ui.net_signal = mk_row(p, "Signal");
     ui.net_ip     = mk_row(p, "IP address");
 
-    lv_obj_t *note = mk_label(tab, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT,
-                              "The network name and password are set in "
-                              "main/wifi_secrets.h when the firmware is built.");
-    lv_obj_set_width(note, LV_PCT(100));
-    lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+    lv_obj_t *sp = mk_panel(tab);
+    ui.net_title = mk_label(sp, APP_FONT_MEDIUM, APP_COLOR_TEXT, "Saved networks");
+    ui.net_list = lv_obj_create(sp);
+    lv_obj_remove_style_all(ui.net_list);
+    lv_obj_set_size(ui.net_list, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ui.net_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ui.net_list, 8, 0);
+    lv_obj_clear_flag(ui.net_list, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    mk_note(sp, "The display connects to the strongest saved network in range. To add "
+                "networks, put a wifi.json file in the dashboard/import folder on the SD "
+                "card and restart (see README.md). It's erased once imported. Built-in = "
+                "set in main/wifi_secrets.h when the firmware was built.");
+    rebuild_net_list();
 }
 
 static void build_display_tab(lv_obj_t *tab)
@@ -515,6 +645,7 @@ static void build_about_tab(lv_obj_t *tab)
 static void settings_create(lv_obj_t *parent)
 {
     memset(&ui, 0, sizeof(ui));
+    ui.root = parent;
 
     lv_obj_t *tv = lv_tabview_create(parent, LV_DIR_TOP, TAB_H);
     lv_obj_set_size(tv, LV_PCT(100), LV_PCT(100));
@@ -555,6 +686,7 @@ static void settings_destroy(void)
         lv_timer_del(s_timer);
         s_timer = NULL;
     }
+    game_dialog_close();
     memset(&ui, 0, sizeof(ui));
 }
 
