@@ -423,6 +423,9 @@ The backup is plain text, so you can look at it (or carefully edit it) on your P
 ## Taking screenshots
 
 Long-press an empty part of the top bar on any screen (the display pauses for a few seconds).
+Full-screen alerts (an alarm, the new-key warning) cover the top bar; take those from the PC with
+`tools/sdcard.py shot` (see [Copying files over USB](#copying-files-over-usb)). Screenshots
+include them.
 
 - **With an SD card in:** the screen is saved as a BMP image in `dashboard/screenshots/`, named
   after the date and time (for example `shot_20261019_213005.bmp`), and a message shows the name.
@@ -466,6 +469,48 @@ $PY tools/sdcard.py shot                         # take a screenshot now
 - A `wifi.json` put into `import/` is imported (and securely erased) at the next restart, the same
   as one copied onto the card.
 
+## Security and privacy
+
+In one place, what's private and how it's protected:
+
+- **Secrets files** `main/wifi_secrets.h` and `main/jellyfin_secrets.h` are in `.gitignore`. Their
+  values are built into the firmware, so don't share firmware files.
+- **Wi-Fi passwords** are kept in the display's NVS flash, never written to the log or to settings
+  backups. An imported `wifi.json` is overwritten and deleted after import, and the Files app and
+  the USB tool never show or send `wifi*.json` files. Settings > Network can securely wipe every
+  saved network (removing one only marks it deleted in flash).
+- **The Jellyfin key** lives in its own storage area, not in backups or the log, and is never
+  shown on screen (only its last 4 characters). With an `http://` server it crosses your network
+  unencrypted.
+- **Apps from the SD card** have full access to the display, so they only run when signed by a
+  trusted key (built in from `keys/`, or added after an on-screen warning and confirmation) or,
+  in developer mode, after you approve each file. The private signing key (`local-keys/`) is
+  git-ignored: **back it up somewhere private**, since GitHub doesn't have it. Keys and developer
+  mode are stored apart from settings, so a restored backup can't change them.
+- **Physical access:** anyone with the display and a USB cable can flash new firmware, which
+  bypasses all of the above. Stopping that needs the ESP32's Secure Boot and Flash Encryption
+  (one-time fuses), which this project doesn't use.
+- **Screenshots and logs** can show your Wi-Fi name, IP address and other details; the log over
+  USB includes them. Check before sharing either.
+
+## Running the tests
+
+The parts that don't need the screen are plain C and are tested on the PC (`gcc` and the system
+Python with Pillow):
+
+```bash
+# Chess and checkers engines (move generation must match known perft counts;
+# the checkers test plays full games, so it takes a few minutes)
+gcc -O2 -I main -o /tmp/chess_test test/host/chess_test.c main/chess_engine.c && /tmp/chess_test
+gcc -O2 -I main -o /tmp/checkers_test test/host/checkers_test.c main/checkers_engine.c && /tmp/checkers_test
+
+# PNG/GIF decoder: pixels checked against Pillow, plus 3000 damaged files (must not crash)
+test/host/pic_decode/run.sh
+
+# Streaming JSON filter used by the Jellyfin app
+test/host/json_skip/run.sh
+```
+
 ## Project layout
 
 | Path | What's there |
@@ -488,7 +533,10 @@ $PY tools/sdcard.py shot                         # take a screenshot now
 | `main/ext_apps.c`, `main/app_keys.c`, `main/app_symbols.c` | SD card apps: loading, signature checks / trusted keys / developer mode, and what apps may call |
 | `sdk/`, `apps/`, `keys/` | App SDK (header and build settings), example apps, the built-in public signing key |
 | `tools/appkey.py`, `tools/build_app.sh` | Make signing keys; build and sign apps |
-| `tools/` | Image generators, the screenshot receiver and the USB file tool |
+| `tools/sdcard.py`, `tools/screenshot.py` | USB file transfer (and `shot`); screenshot receiver when there's no SD card |
+| `tools/gen_game_images.py`, `gen_stonks_icon.py`, `gen_elf_icon.py` | Generate the built-in images (`main/game_images.c`, `stonks_icon.c`, `elf_icon.c`) |
+| `tools/gen_app_symbols.py` | Generates `main/app_symbols.c`, what SD card apps may call; rerun after a build when LVGL's settings change |
+| `test/host/` | Tests that run on the PC (see [Running the tests](#running-the-tests)) |
 | `CLAUDE.md` | Detailed developer notes |
 
 ## Credits
