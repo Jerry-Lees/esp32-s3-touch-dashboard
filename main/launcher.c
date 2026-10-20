@@ -29,7 +29,8 @@ esp_err_t wavesahre_rgb_lcd_bl_on(void);
 esp_err_t wavesahre_rgb_lcd_bl_off(void);
 
 /* ---- App registry: add new apps here ----
- * Order = tile order, except apps with pin_last (Settings) always go last.
+ * Order = default tile order (apps with pin_last, Settings, start last);
+ * the user's own order is saved in settings, see order_load().
  * Folder contents are NULL-terminated lists. */
 static const app_t *const s_games[] = {
     &chess_app,
@@ -121,7 +122,13 @@ static void make_title(lv_obj_t *bar, const char *text)
 }
 
 static lv_obj_t *build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count,
-                            lv_coord_t height, bool compact);
+                            lv_coord_t height, bool compact, const char *key);
+static void edit_end(void);
+
+static lv_obj_t *s_edit_grid;      /* grid being rearranged, or NULL */
+static char      s_folder_key[16]; /* settings key of the open folder's order */
+static bool      s_folder_reordered;
+static void layout_home(void);
 
 /* ---------- app screens ---------- */
 
@@ -168,7 +175,12 @@ static void launch_app(const app_t *app)
 static void folder_back_clicked(lv_event_t *e)
 {
     (void)e;
+    if (s_edit_grid && lv_obj_get_screen(s_edit_grid) == s_folder_scr) edit_end();
     lv_scr_load(s_home_scr);
+    if (s_folder_reordered) {
+        s_folder_reordered = false;
+        layout_home();            /* the folder tile's preview shows the new order */
+    }
     if (s_folder_scr) {
         lv_obj_del_async(s_folder_scr);   /* we're inside its event */
         s_folder_scr = NULL;
@@ -189,19 +201,92 @@ static void open_folder(const app_t *folder)
     lv_obj_t *bar = make_top_bar(scr);
     make_back_button(bar, "Home", folder_back_clicked);
     make_title(bar, folder->name);
+    snprintf(s_folder_key, sizeof(s_folder_key), "ord_%.11s", folder->name);
     build_grid(scr, folder->folder, folder_count(folder),
-               lv_disp_get_ver_res(NULL) - BAR_H, false);
+               lv_disp_get_ver_res(NULL) - BAR_H, false, s_folder_key);
 
     s_folder_scr = scr;
     s_folder = folder;
     lv_scr_load(scr);
 }
 
+/* ---------- tile order and rearranging ----------
+ * Hold a tile to pick it up: it follows the finger, the other tiles make
+ * room, and "Done" in the top bar ends rearranging (swipes still scroll,
+ * taps open nothing until then). Each grid's order is saved as a settings
+ * string of app names ("ord_home", "ord_<folder>"); apps missing from it
+ * (new ones) go at the end. pin_last (Settings) only sets the starting
+ * place; those tiles can be moved like any other.
+ */
+#define ORDER_MAX 400
+#define GRID_MAX  32
+
+static lv_obj_t  *s_edit_done;   /* "Done" button while rearranging */
+static lv_obj_t  *s_drag_tile;   /* tile being dragged (left faded in place) */
+static lv_obj_t  *s_drag_ghost;  /* copy of it on the top layer, under the finger */
+static lv_point_t s_drag_ofs;    /* finger position inside the tile */
+
+static void make_tile(lv_obj_t *grid, const app_t *app, lv_coord_t w, lv_coord_t h);
+
+/* apps in the saved order; returns how many */
+static size_t order_load(const char *key, const app_t *const *apps, size_t count,
+                         const app_t **out)
+{
+    char saved[ORDER_MAX];
+    bool used[GRID_MAX] = { false };
+    size_t n = 0;
+
+    if (count > GRID_MAX) count = GRID_MAX;
+    settings_get_str(key, saved, sizeof(saved));
+    char *save;
+    for (char *name = strtok_r(saved, ",", &save); name; name = strtok_r(NULL, ",", &save)) {
+        for (size_t i = 0; i < count; i++) {
+            if (!used[i] && strcmp(apps[i]->name, name) == 0) {
+                out[n++] = apps[i];
+                used[i] = true;
+                break;
+            }
+        }
+    }
+    /* Two passes: the rest of the normal apps, then pinned-last ones. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < count; i++) {
+            if (!used[i] && apps[i]->pin_last == (pass == 1)) out[n++] = apps[i];
+        }
+    }
+    return n;
+}
+
+static void order_save(lv_obj_t *grid)
+{
+    char buf[ORDER_MAX], old[ORDER_MAX];
+    size_t len = 0;
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(grid); i++) {
+        const app_t *app = lv_obj_get_user_data(lv_obj_get_child(grid, i));
+        if (!app) continue;
+        int w = snprintf(buf + len, sizeof(buf) - len, "%s%s", len ? "," : "", app->name);
+        if (w < 0 || (size_t)w >= sizeof(buf) - len) {
+            buf[len] = '\0';
+            break;
+        }
+        len += w;
+    }
+    const char *key = lv_obj_get_user_data(grid);
+    if (!settings_get_str(key, old, sizeof(old)) || strcmp(old, buf) != 0) {
+        settings_set_str(key, buf);
+        if (key == s_folder_key) s_folder_reordered = true;
+    }
+}
+
 /* Folder tile icon: a 2 x 2 preview of the apps inside, in their colours. */
 static void draw_folder_preview(lv_obj_t *holder, const app_t *folder, int size)
 {
     const int gap = 6, cell = (size - gap) / 2;
-    size_t n = folder_count(folder);
+    char key[16];
+    const app_t *apps[GRID_MAX];
+    snprintf(key, sizeof(key), "ord_%.11s", folder->name);
+    size_t n = order_load(key, folder->folder, folder_count(folder), apps);
     for (int i = 0; i < 4; i++) {
         lv_obj_t *c = lv_obj_create(holder);
         lv_obj_remove_style_all(c);
@@ -210,7 +295,7 @@ static void draw_folder_preview(lv_obj_t *holder, const app_t *folder, int size)
         lv_obj_set_style_radius(c, 7, 0);
         lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
         if ((size_t)i < n) {
-            lv_obj_set_style_bg_color(c, lv_color_hex(folder->folder[i]->color_hex), 0);
+            lv_obj_set_style_bg_color(c, lv_color_hex(apps[i]->color_hex), 0);
             lv_obj_set_style_border_color(c, lv_color_white(), 0);
             lv_obj_set_style_border_width(c, 2, 0);
         } else {
@@ -221,13 +306,143 @@ static void draw_folder_preview(lv_obj_t *holder, const app_t *folder, int size)
     }
 }
 
-static void tile_clicked(lv_event_t *e)
+static void drag_start(lv_obj_t *tile, const lv_point_t *p)
 {
-    const app_t *app = (const app_t *)lv_event_get_user_data(e);
-    if (app->folder) {
-        open_folder(app);
-    } else {
-        launch_app(app);
+    lv_area_t a;
+    lv_obj_get_coords(tile, &a);
+    s_drag_tile = tile;
+    s_drag_ofs.x = p->x - a.x1;
+    s_drag_ofs.y = p->y - a.y1;
+
+    make_tile(lv_layer_top(), lv_obj_get_user_data(tile),
+              lv_area_get_width(&a), lv_area_get_height(&a));
+    s_drag_ghost = lv_obj_get_child(lv_layer_top(), -1);
+    lv_obj_clear_flag(s_drag_ghost, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_shadow_width(s_drag_ghost, 30, 0);
+    lv_obj_set_style_shadow_opa(s_drag_ghost, LV_OPA_70, 0);
+    lv_obj_set_style_border_color(s_drag_ghost, lv_color_white(), 0);
+    lv_obj_set_style_border_width(s_drag_ghost, 3, 0);
+    lv_obj_set_pos(s_drag_ghost, a.x1, a.y1);
+
+    lv_obj_set_style_opa(tile, LV_OPA_20, 0);
+    /* Moving the finger now drags the tile instead of scrolling the grid. */
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLL_CHAIN);
+}
+
+static void drag_move(const lv_point_t *p)
+{
+    lv_obj_set_pos(s_drag_ghost, p->x - s_drag_ofs.x, p->y - s_drag_ofs.y);
+
+    /* Near the top or bottom edge: scroll to reach the rest of the grid. */
+    lv_obj_t *grid = lv_obj_get_parent(s_drag_tile);
+    lv_area_t g;
+    lv_obj_get_coords(grid, &g);
+    if (p->y < g.y1 + 50) {
+        lv_obj_scroll_by_bounded(grid, 0, 10, LV_ANIM_OFF);
+    } else if (p->y > g.y2 - 50) {
+        lv_obj_scroll_by_bounded(grid, 0, -10, LV_ANIM_OFF);
+    }
+
+    /* Finger over another tile: take its place (the rest shift along). */
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(grid); i++) {
+        lv_obj_t *t = lv_obj_get_child(grid, i);
+        lv_area_t a;
+        lv_obj_get_coords(t, &a);
+        if (t != s_drag_tile && _lv_area_is_point_on(&a, p, 0)) {
+            lv_obj_move_to_index(s_drag_tile, i);
+            lv_obj_update_layout(grid);
+            break;
+        }
+    }
+}
+
+static void drag_end(void)
+{
+    lv_obj_t *grid = lv_obj_get_parent(s_drag_tile);
+    lv_obj_del(s_drag_ghost);
+    lv_obj_set_style_opa(s_drag_tile, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_drag_tile, LV_OBJ_FLAG_SCROLL_CHAIN);
+    s_drag_ghost = NULL;
+    s_drag_tile = NULL;
+    order_save(grid);
+}
+
+static void edit_set_borders(lv_obj_t *grid, bool on)
+{
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(grid); i++) {
+        lv_obj_t *t = lv_obj_get_child(grid, i);
+        lv_obj_set_style_border_color(t, lv_color_white(), 0);
+        lv_obj_set_style_border_opa(t, LV_OPA_60, 0);
+        lv_obj_set_style_border_width(t, on ? 3 : 0, 0);
+    }
+}
+
+static void edit_done_clicked(lv_event_t *e)
+{
+    (void)e;
+    edit_end();
+}
+
+static void edit_begin(lv_obj_t *grid)
+{
+    if (s_edit_grid == grid) return;
+    edit_end();
+    s_edit_grid = grid;
+    edit_set_borders(grid, true);
+
+    /* Over the middle of the top bar (covers a folder's title). */
+    lv_obj_t *bar = lv_obj_get_child(lv_obj_get_screen(grid), 0);
+    s_edit_done = lv_btn_create(bar);
+    lv_obj_set_size(s_edit_done, 170, 44);
+    lv_obj_align(s_edit_done, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(s_edit_done, 22, 0);
+    lv_obj_set_style_bg_color(s_edit_done, lv_color_hex(0x43A047), 0);
+    lv_obj_add_event_cb(s_edit_done, edit_done_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl = lv_label_create(s_edit_done);
+    lv_label_set_text(lbl, LV_SYMBOL_OK "  Done");
+    lv_obj_set_style_text_font(lbl, APP_FONT_MEDIUM, 0);
+    lv_obj_center(lbl);
+}
+
+static void edit_end(void)
+{
+    if (!s_edit_grid) return;
+    if (s_drag_tile) drag_end();
+    edit_set_borders(s_edit_grid, false);
+    lv_obj_del_async(s_edit_done);   /* we may be inside its event */
+    s_edit_done = NULL;
+    s_edit_grid = NULL;
+}
+
+static void tile_event(lv_event_t *e)
+{
+    lv_obj_t *tile = lv_event_get_current_target(e);
+    const app_t *app = lv_obj_get_user_data(tile);
+    lv_point_t p = { 0, 0 };
+    if (lv_indev_get_act()) lv_indev_get_point(lv_indev_get_act(), &p);
+
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_CLICKED:
+        if (s_edit_grid) break;            /* rearranging: taps open nothing */
+        if (app->folder) {
+            open_folder(app);
+        } else {
+            launch_app(app);
+        }
+        break;
+    case LV_EVENT_LONG_PRESSED:
+        edit_begin(lv_obj_get_parent(tile));
+        if (!s_drag_tile) drag_start(tile, &p);
+        break;
+    case LV_EVENT_PRESSING:
+        if (s_drag_tile == tile) drag_move(&p);
+        break;
+    case LV_EVENT_RELEASED:
+    case LV_EVENT_PRESS_LOST:
+        if (s_drag_tile == tile) drag_end();
+        break;
+    default:
+        break;
     }
 }
 
@@ -281,7 +496,8 @@ static void make_tile(lv_obj_t *grid, const app_t *app, lv_coord_t w, lv_coord_t
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(tile, 12, 0);
-    lv_obj_add_event_cb(tile, tile_clicked, LV_EVENT_CLICKED, (void *)app);
+    lv_obj_set_user_data(tile, (void *)app);
+    lv_obj_add_event_cb(tile, tile_event, LV_EVENT_ALL, NULL);
 
     if (app->draw_icon || app->folder) {
         lv_obj_t *holder = lv_obj_create(tile);
@@ -304,28 +520,36 @@ static void make_tile(lv_obj_t *grid, const app_t *app, lv_coord_t w, lv_coord_t
     lv_obj_set_style_text_font(name, APP_FONT_MEDIUM, 0);
 }
 
-/* Tile grid below the top bar (home screen or a folder). Compact = smaller
- * tiles (5 per row) to make room for the info ticker. */
+/* Tile grid below the top bar (home screen or a folder), in the order saved
+ * under settings key `key` (kept as the grid's user data). It scrolls up and
+ * down when the tiles don't fit. Compact = smaller tiles (5 per row) to make
+ * room for the info ticker. */
 static lv_obj_t *build_grid(lv_obj_t *scr, const app_t *const *apps, size_t count,
-                            lv_coord_t height, bool compact)
+                            lv_coord_t height, bool compact, const char *key)
 {
     lv_obj_t *grid = lv_obj_create(scr);
     lv_obj_remove_style_all(grid);
     lv_obj_set_size(grid, LV_PCT(100), height);
     lv_obj_align(grid, LV_ALIGN_TOP_LEFT, 0, BAR_H);
+    lv_obj_set_user_data(grid, (void *)key);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_style_pad_hor(grid, compact ? 18 : 28, 0);
     lv_obj_set_style_pad_ver(grid, compact ? 16 : 28, 0);
     lv_obj_set_style_pad_row(grid, compact ? 16 : 24, 0);
     lv_obj_set_style_pad_column(grid, compact ? 16 : 24, 0);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_color(grid, lv_color_white(), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(grid, LV_OPA_40, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(grid, 6, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(grid, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_right(grid, 4, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_ver(grid, 8, LV_PART_SCROLLBAR);
 
-    /* Two passes: normal apps first, then pinned-last apps (Settings). */
-    for (int pass = 0; pass < 2; pass++) {
-        for (size_t i = 0; i < count; i++) {
-            if (apps[i]->pin_last == (pass == 1)) {
-                make_tile(grid, apps[i], compact ? 140 : 160, compact ? 132 : 150);
-            }
-        }
+    const app_t *ordered[GRID_MAX];
+    size_t n = order_load(key, apps, count, ordered);
+    for (size_t i = 0; i < n; i++) {
+        make_tile(grid, ordered[i], compact ? 140 : 160, compact ? 132 : 150);
     }
     return grid;
 }
@@ -333,13 +557,14 @@ static lv_obj_t *build_grid(lv_obj_t *scr, const app_t *const *apps, size_t coun
 /* Home tiles, plus the ticker strip when it's switched on. */
 static void layout_home(void)
 {
+    if (s_home_grid && s_edit_grid == s_home_grid) edit_end();
     if (s_home_grid) lv_obj_del(s_home_grid);
     if (s_home_ticker) lv_obj_del(s_home_ticker);
     s_home_ticker = NULL;
 
     bool ticker = settings_get_ticker();
     lv_coord_t h = lv_disp_get_ver_res(NULL) - BAR_H - (ticker ? TICKER_H : 0);
-    s_home_grid = build_grid(s_home_scr, s_apps, APP_COUNT, h, ticker);
+    s_home_grid = build_grid(s_home_scr, s_apps, APP_COUNT, h, ticker, "ord_home");
     if (ticker) {
         s_home_ticker = ticker_create(s_home_scr);
         ticker_set_running(lv_scr_act() == s_home_scr);
@@ -355,6 +580,12 @@ static void ticker_service_tick(lv_timer_t *t)
 {
     (void)t;
     ticker_service();
+}
+
+static void gear_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (!s_edit_grid) launch_app(&settings_app);
 }
 
 static void build_home(void)
@@ -375,16 +606,26 @@ static void build_home(void)
     lv_label_set_text(s_home_clock, "--:--");
     lv_obj_align(s_home_clock, LV_ALIGN_RIGHT_MID, 0, 0);
 
+    /* Settings shortcut, so it's easy to reach wherever its tile was moved. */
+    lv_obj_t *gear = lv_label_create(bar);
+    lv_label_set_text(gear, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_font(gear, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(gear, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_align(gear, LV_ALIGN_RIGHT_MID, -130, 0);
+    lv_obj_add_flag(gear, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(gear, 18);
+    lv_obj_add_event_cb(gear, gear_clicked, LV_EVENT_CLICKED, NULL);
+
     s_home_wifi = lv_label_create(bar);
     lv_label_set_text(s_home_wifi, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_font(s_home_wifi, APP_FONT_MEDIUM, 0);
-    lv_obj_align(s_home_wifi, LV_ALIGN_RIGHT_MID, -130, 0);
+    lv_obj_align(s_home_wifi, LV_ALIGN_RIGHT_MID, -180, 0);
 
     s_home_status = lv_label_create(bar);
     lv_obj_set_style_text_font(s_home_status, APP_FONT_MEDIUM, 0);
     lv_obj_set_style_text_color(s_home_status, lv_color_hex(0xFFB74D), 0);
     lv_label_set_text(s_home_status, "");
-    lv_obj_align(s_home_status, LV_ALIGN_RIGHT_MID, -180, 0);
+    lv_obj_align(s_home_status, LV_ALIGN_RIGHT_MID, -230, 0);
     lv_obj_add_flag(s_home_status, LV_OBJ_FLAG_HIDDEN);
 
     layout_home();

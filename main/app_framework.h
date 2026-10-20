@@ -13,8 +13,8 @@
  *   3. Add `&my_app` to the s_apps[] list in launcher.c
  *   4. Add app_myapp.c to SRCS in main/CMakeLists.txt
  *
- * Apps with pin_last = true (Settings) are always drawn after all the
- * others, wherever they sit in s_apps[].
+ * Apps with pin_last = true (Settings) start after all the others,
+ * wherever they sit in s_apps[]; the user can still move them.
  *
  * Folders: an app_t with `folder` set (a NULL-terminated list of apps) is
  * a folder tile; tapping it opens a grid of those apps. Folders are defined
@@ -31,7 +31,7 @@ typedef struct app_s {
     /* Optional: draws a custom tile icon into a size x size box instead of
      * using `symbol`. */
     void (*draw_icon)(lv_obj_t *holder, int size);
-    /* true = always show this tile at the end of the home screen. */
+    /* true = start this tile at the end (until the user moves it). */
     bool pin_last;
     /* Non-NULL = this tile is a folder of these apps (NULL-terminated);
      * create/destroy are then unused. */

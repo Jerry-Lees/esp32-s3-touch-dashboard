@@ -35,7 +35,11 @@ Board documentation and schematic:
 
 ### Home screen and launcher
 
-- Tile grid of apps, with a clock and Wi-Fi status in the top bar. Games live in a **Games folder**.
+- Tile grid of apps, with a clock, Wi-Fi status and a **gear button for Settings** in the top bar.
+  Games live in a **Games folder**. When there are more tiles than fit, swipe up and down to scroll.
+- **Rearrange the tiles**: hold a tile until it lifts, drag it to a new place (drag to the top or
+  bottom edge to scroll), then tap **Done**. Works inside folders too; the order is saved and is part
+  of settings backups. New apps start at the end.
 - The top bar also shows the soonest running timer, or the next alarm (in orange).
 - **Info ticker** (optional, Settings > Display): a strip along the bottom fifth of the home
   screen that scrolls the weather for the cities you pick (now, today and tomorrow) and your
