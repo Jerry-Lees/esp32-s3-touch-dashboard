@@ -26,8 +26,11 @@ static const char *TAG = "app_keys";
 #define MAX_OK    16                /* approved unsigned apps */
 #define MAX_PEND  4
 
-extern const char builtin_pub_start[] asm("_binary_builtin_app_key_pub_start");
-extern const char builtin_pub_end[]   asm("_binary_builtin_app_key_pub_end");
+/* Every .pub file in the project's keys/ folder, gathered by main/CMakeLists.txt as
+ * "name: <file name>" lines, each followed by that file's PEM text. */
+extern const char builtin_keys_start[] asm("_binary_builtin_keys_txt_start");
+extern const char builtin_keys_end[]   asm("_binary_builtin_keys_txt_end");
+#define MAX_BUILTIN 4
 
 typedef struct {
     char    name[APPK_NAME_MAX];
@@ -41,8 +44,8 @@ typedef struct {
 } key_t_;
 
 static SemaphoreHandle_t s_mx;
-static key_t_  s_builtin;
-static bool    s_have_builtin;
+static key_t_  s_builtin[MAX_BUILTIN];
+static int     s_nbuiltin;
 static key_t_  s_keys[APPK_MAX_KEYS];
 static int     s_nkeys;
 static bool    s_dev;
@@ -50,6 +53,8 @@ static uint8_t s_ok[MAX_OK][32];
 static int     s_nok;
 static key_t_  s_pend[MAX_PEND];
 static int     s_npend;
+
+static void field(char *out, size_t cap, const uint8_t *in, size_t n, bool ascii);
 
 static void lock(void)   { xSemaphoreTake(s_mx, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_mx); }
@@ -112,16 +117,35 @@ void app_keys_init(void)
     if (s_mx) return;
     s_mx = xSemaphoreCreateMutex();
 
-    /* The built-in key is NUL-terminated (EMBED_TXTFILES), as PEM parsing needs. */
-    s_have_builtin = to_der((const uint8_t *)builtin_pub_start,
-                            builtin_pub_end - builtin_pub_start, s_builtin.k.der,
-                            &s_builtin.k.der_len);
-    if (s_have_builtin) {
-        strcpy(s_builtin.k.name, "Built-in");
-        key_id(s_builtin.k.der, s_builtin.k.der_len, s_builtin.id);
-    } else {
-        ESP_LOGE(TAG, "The built-in key (keys/builtin_app_key.pub) couldn't be read");
+    /* Built-in keys: split the embedded text at each "name: " line. */
+    const char *p = builtin_keys_start, *end = builtin_keys_end;
+    while (p < end && s_nbuiltin < MAX_BUILTIN) {
+        const char *name = strstr(p, "name: ");
+        if (!name) break;
+        name += 6;
+        const char *nl = strchr(name, '\n');
+        if (!nl) break;
+        const char *next = strstr(nl, "name: ");
+        size_t pem_len = (next ? next : end) - (nl + 1);
+        static char pem[1024];
+        if (pem_len >= sizeof(pem)) pem_len = sizeof(pem) - 1;
+        memcpy(pem, nl + 1, pem_len);
+        pem[pem_len] = '\0';                      /* PEM parsing wants the NUL counted */
+        key_t_ *k = &s_builtin[s_nbuiltin];
+        char fname[APPK_NAME_MAX];
+        field(fname, sizeof(fname), (const uint8_t *)name, nl - name, true);
+        if (to_der((const uint8_t *)pem, pem_len + 1, k->k.der, &k->k.der_len)) {
+            /* builtin_app_key.pub is just "Built-in"; others keep their file name. */
+            if (!strcmp(fname, "builtin_app_key")) strcpy(k->k.name, "Built-in");
+            else snprintf(k->k.name, sizeof(k->k.name), "%s", fname);
+            key_id(k->k.der, k->k.der_len, k->id);
+            s_nbuiltin++;
+        } else {
+            ESP_LOGE(TAG, "Built-in key %s isn't an ECDSA P-256 public key", fname);
+        }
+        p = next ? next : end;
     }
+    if (s_nbuiltin == 0) ESP_LOGW(TAG, "No built-in app keys (keys/*.pub)");
 
     nvs_handle_t h;
     if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
@@ -148,7 +172,7 @@ void app_keys_init(void)
 int app_keys_count(void)
 {
     lock();
-    int n = s_nkeys + (s_have_builtin ? 1 : 0);
+    int n = s_nkeys + s_nbuiltin;
     unlock();
     return n;
 }
@@ -157,12 +181,12 @@ bool app_keys_get(int i, appk_key_t *out)
 {
     bool ok = true;
     lock();
-    if (s_have_builtin && i == 0) {
-        strcpy(out->name, s_builtin.k.name);
-        memcpy(out->id, s_builtin.id, 8);
+    if (i >= 0 && i < s_nbuiltin) {
+        strcpy(out->name, s_builtin[i].k.name);
+        memcpy(out->id, s_builtin[i].id, 8);
         out->builtin = true;
     } else {
-        i -= s_have_builtin ? 1 : 0;
+        i -= s_nbuiltin;
         if (i >= 0 && i < s_nkeys) {
             snprintf(out->name, sizeof(out->name), "%s", s_keys[i].k.name);
             memcpy(out->id, s_keys[i].id, 8);
@@ -178,7 +202,7 @@ bool app_keys_get(int i, appk_key_t *out)
 bool app_keys_remove(int i)
 {
     lock();
-    i -= s_have_builtin ? 1 : 0;
+    i -= s_nbuiltin;
     bool ok = i >= 0 && i < s_nkeys;
     if (ok) {
         memmove(&s_keys[i], &s_keys[i + 1], sizeof(s_keys[0]) * (s_nkeys - i - 1));
@@ -293,7 +317,9 @@ appk_status_t app_keys_check(const uint8_t *d, size_t len, appk_info_t *info,
         size_t sig_len = rd16(d + body);
         lock();
         const key_t_ *key = NULL;
-        if (s_have_builtin && !memcmp(s_builtin.id, info->key_id, 8)) key = &s_builtin;
+        for (int i = 0; !key && i < s_nbuiltin; i++) {
+            if (!memcmp(s_builtin[i].id, info->key_id, 8)) key = &s_builtin[i];
+        }
         for (int i = 0; !key && i < s_nkeys; i++) {
             if (!memcmp(s_keys[i].id, info->key_id, 8)) key = &s_keys[i];
         }
@@ -361,7 +387,8 @@ void app_keys_import_dir(const char *dir)
         field(k.k.name, sizeof(k.k.name), (const uint8_t *)de->d_name, n - 4, true);
         key_id(k.k.der, k.k.der_len, k.id);
         lock();
-        bool known = s_have_builtin && !memcmp(s_builtin.id, k.id, 8);
+        bool known = false;
+        for (int i = 0; i < s_nbuiltin; i++) known |= !memcmp(s_builtin[i].id, k.id, 8);
         for (int i = 0; i < s_nkeys; i++) known |= !memcmp(s_keys[i].id, k.id, 8);
         if (!known && s_npend < MAX_PEND) s_pend[s_npend++] = k;
         unlock();
@@ -381,14 +408,19 @@ bool app_keys_pending(char *name, size_t name_len, uint8_t id[8])
     return any;
 }
 
-bool app_keys_answer(bool yes)
+bool app_keys_answer(bool yes, const char *name)
 {
     bool ok = true;
     lock();
     if (s_npend > 0) {
         if (yes) {
             if (s_nkeys < APPK_MAX_KEYS) {
-                s_keys[s_nkeys++] = s_pend[0];
+                s_keys[s_nkeys] = s_pend[0];
+                char clean[APPK_NAME_MAX];
+                field(clean, sizeof(clean), (const uint8_t *)(name ? name : ""),
+                      name ? strlen(name) : 0, true);
+                if (clean[0]) strcpy(s_keys[s_nkeys].k.name, clean);
+                s_nkeys++;
                 save_keys();
             } else {
                 ok = false;

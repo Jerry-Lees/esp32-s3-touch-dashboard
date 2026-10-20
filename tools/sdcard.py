@@ -14,6 +14,7 @@ port (close any `idf.py monitor` first):
   $PY tools/sdcard.py get screenshots ./shots    # card -> PC (a file or a whole folder)
   $PY tools/sdcard.py rm pictures/x.jpg          # a file or an empty folder
   $PY tools/sdcard.py mkdir pictures/holiday
+  $PY tools/sdcard.py shot                       # take a screenshot now (also full-screen alerts)
 
 Options: -p PORT (default /dev/ttyACM0), --force (put: replace existing files).
 Files named wifi*.json are never sent from the display.
@@ -210,7 +211,7 @@ def main():
     ap = argparse.ArgumentParser(description="Files on the display's SD card (dashboard/ folder) over USB.")
     ap.add_argument("-p", "--port", default="/dev/ttyACM0")
     ap.add_argument("--force", action="store_true", help="put: replace files that are already there")
-    ap.add_argument("command", choices=["ls", "get", "put", "rm", "mkdir"])
+    ap.add_argument("command", choices=["ls", "get", "put", "rm", "mkdir", "shot"])
     ap.add_argument("paths", nargs="*")
     a = ap.parse_args()
 
@@ -256,6 +257,9 @@ def main():
             for p in a.paths:
                 d.request("rm " + enc(p))
                 print(f"  deleted {p}")
+        elif a.command == "shot":
+            d.request("shot")
+            print("  screenshot taken (it's saved in dashboard/screenshots)")
         elif a.command == "mkdir":
             for p in a.paths:
                 d.request("mkdir " + enc(p))

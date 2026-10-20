@@ -14,7 +14,6 @@
 #include "app_framework.h"
 #include "app_keys.h"
 #include "ext_apps.h"
-#include "game_common.h"
 #include "launcher.h"
 #include "clock_tools.h"
 #include "net_time.h"
@@ -736,7 +735,8 @@ static void screen_timeout_tick(lv_timer_t *t)
         return;
     }
     int minutes = settings_get_screen_timeout_min();
-    if (s_wake_catcher || minutes == 0 || s_current_app == &photos_app || clock_tools_alerting()) {
+    if (s_wake_catcher || minutes == 0 || s_current_app == &photos_app || clock_tools_alerting() ||
+        s_trust_open) {
         return;                          /* the Photos app is a photo frame: stay on */
     }
     if (lv_disp_get_inactive_time(NULL) < (uint32_t)minutes * 60000U) {
@@ -840,45 +840,218 @@ void launcher_toast(const char *text, uint32_t ms)
     lv_timer_set_repeat_count(s_toast_timer, 1);
 }
 
-/* ---------- "trust this key?" (a .pub file was in dashboard/import) ---------- */
+/* ---------- "trust this new key?" (a .pub file was in dashboard/import) ----------
+ * Full screen and flashing like an alarm, so it can't be missed. Reject is
+ * the big default; Trust is small, in the far corner, and must be held for
+ * TRUST_HOLD_MS so it can't be tapped by accident. Then the user names the
+ * key (on-screen keyboard; the file's suggestion is pre-filled but marked as
+ * not verified); Cancel there still rejects. While any of it is up, nothing
+ * underneath gets taps and the screen doesn't time out.
+ */
+#define TRUST_HOLD_MS 3000
 
-static void trust_answer(lv_event_t *e)
+static lv_obj_t   *s_trust;          /* the warning, or NULL */
+static lv_obj_t   *s_trust_bar;      /* fills while Trust is held */
+static lv_obj_t   *s_trust_ta;       /* name box on the naming page, or NULL */
+static lv_timer_t *s_trust_timer;
+static uint32_t    s_trust_since, s_trust_hold;   /* hold start tick, 0 = not held */
+
+static void trust_close(bool yes, const char *name)
 {
-    bool yes = lv_event_get_user_data(e) != NULL;
-    game_dialog_close();
+    if (s_trust_timer) lv_timer_del(s_trust_timer);
+    s_trust_timer = NULL;
+    if (s_trust) lv_obj_del_async(s_trust);        /* called from its own buttons */
+    s_trust = s_trust_bar = s_trust_ta = NULL;
     s_trust_open = false;
-    if (!app_keys_answer(yes)) {
+    s_trust_hold = 0;
+    if (!app_keys_answer(yes, name)) {
         launcher_toast("Not trusted: there are already 8 keys. Remove one in Settings > Apps.",
                        8000);
-    } else if (yes) {
-        launcher_toast("Key trusted. Apps signed with it can now run.", 5000);
+    } else {
+        launcher_toast(yes ? "Key trusted. Apps signed with it can now run."
+                           : "Key rejected. It was not added.", 5000);
     }
     ext_apps_rescan();
 }
 
+static void trust_reject(lv_event_t *e)
+{
+    (void)e;
+    trust_close(false, NULL);
+}
+
+static void trust_save(lv_event_t *e)
+{
+    (void)e;
+    if (!s_trust_ta) return;
+    char name[APPK_NAME_MAX];
+    snprintf(name, sizeof(name), "%s", lv_textarea_get_text(s_trust_ta));
+    trust_close(true, name);
+}
+
+static void trust_kb_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_READY) trust_save(e);
+    else trust_reject(e);
+}
+
+static void trust_hold_event(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        s_trust_hold = lv_tick_get() | 1;          /* never 0 */
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        s_trust_hold = 0;
+        if (s_trust_bar) lv_bar_set_value(s_trust_bar, 0, LV_ANIM_OFF);
+    }
+}
+
+static lv_obj_t *trust_label(lv_obj_t *parent, const lv_font_t *font, const char *text);
+
+/* After the hold: name the key. Not flashing any more; Cancel = reject. */
+static void trust_name_page(void)
+{
+    char name[APPK_NAME_MAX], fp[24], text[200];
+    uint8_t id[8];
+    if (!app_keys_pending(name, sizeof(name), id)) return;
+    app_keys_fingerprint(id, fp, sizeof(fp));
+    s_trust_hold = 0;
+    s_trust_bar = NULL;
+    lv_obj_clean(s_trust);                         /* from the timer, not an event */
+    lv_obj_set_style_bg_color(s_trust, lv_color_hex(0x3E0A0A), 0);
+
+    lv_obj_t *t = trust_label(s_trust, APP_FONT_LARGE, "Name this key");
+    lv_obj_set_pos(t, 16, 14);
+    lv_obj_t *cb = lv_btn_create(s_trust);
+    lv_obj_set_size(cb, 130, 46);
+    lv_obj_align(cb, LV_ALIGN_TOP_RIGHT, -160, 8);
+    lv_obj_set_style_bg_color(cb, lv_color_hex(0x37474F), 0);
+    lv_obj_add_event_cb(cb, trust_reject, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(trust_label(cb, APP_FONT_MEDIUM, "Cancel"));
+    lv_obj_t *sb = lv_btn_create(s_trust);
+    lv_obj_set_size(sb, 136, 46);
+    lv_obj_align(sb, LV_ALIGN_TOP_RIGHT, -12, 8);
+    lv_obj_set_style_bg_color(sb, lv_color_hex(0x1B8F4A), 0);
+    lv_obj_add_event_cb(sb, trust_save, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(trust_label(sb, APP_FONT_MEDIUM, LV_SYMBOL_OK "  Trust"));
+
+    snprintf(text, sizeof(text), "Fingerprint %s.  The file suggests \"%s\" (not verified: "
+             "anyone can write any name). Name it after who you know it belongs to.", fp, name);
+    lv_obj_t *info = trust_label(s_trust, LV_FONT_DEFAULT, text);
+    lv_obj_set_width(info, 768);
+    lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(info, 16, 64);
+
+    s_trust_ta = lv_textarea_create(s_trust);
+    lv_textarea_set_one_line(s_trust_ta, true);
+    lv_textarea_set_max_length(s_trust_ta, APPK_NAME_MAX - 1);
+    lv_textarea_set_text(s_trust_ta, name);
+    lv_textarea_set_placeholder_text(s_trust_ta, "Name for this key");
+    lv_obj_set_style_text_font(s_trust_ta, APP_FONT_MEDIUM, 0);
+    lv_obj_set_size(s_trust_ta, 768, 52);
+    lv_obj_set_pos(s_trust_ta, 16, 118);
+    lv_obj_add_state(s_trust_ta, LV_STATE_FOCUSED);
+
+    lv_obj_t *kb = lv_keyboard_create(s_trust);
+    lv_obj_set_size(kb, 800, 250);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(kb, s_trust_ta);
+    lv_obj_add_event_cb(kb, trust_kb_event, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(kb, trust_kb_event, LV_EVENT_CANCEL, NULL);
+}
+
+static void trust_tick(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_trust) return;
+    lv_disp_trig_activity(NULL);                   /* keep the screen awake */
+    if (s_trust_ta) return;                        /* naming page: no flashing */
+    bool bright = (lv_tick_elaps(s_trust_since) / 500) % 2 == 0;
+    lv_obj_set_style_bg_color(s_trust, lv_color_hex(bright ? 0xC62828 : 0x3E0A0A), 0);
+    if (s_trust_hold) {
+        uint32_t held = lv_tick_elaps(s_trust_hold);
+        lv_bar_set_value(s_trust_bar, (int32_t)(held * 100 / TRUST_HOLD_MS), LV_ANIM_OFF);
+        if (held >= TRUST_HOLD_MS) trust_name_page();
+    }
+}
+
+static lv_obj_t *trust_label(lv_obj_t *parent, const lv_font_t *font, const char *text)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_set_style_text_font(l, font, 0);
+    lv_obj_set_style_text_color(l, lv_color_white(), 0);
+    lv_label_set_text(l, text);
+    return l;
+}
+
 static void trust_prompt(void)
 {
-    char name[APPK_NAME_MAX], fp[24], text[400];
+    char name[APPK_NAME_MAX], fp[24], text[600];
     uint8_t id[8];
-    if (s_trust_open || s_wake_catcher || lv_scr_act() != s_home_scr ||
-        !app_keys_pending(name, sizeof(name), id)) {
-        return;
-    }
+    if (s_trust_open || !app_keys_pending(name, sizeof(name), id)) return;
+    launcher_wake();
     app_keys_fingerprint(id, fp, sizeof(fp));
-    snprintf(text, sizeof(text), "Apps signed with the key \"%s\" will be able to run on this "
-             "display, with full access to it (including saved Wi-Fi passwords).\n\n"
-             "Fingerprint: %s\n\nCheck the fingerprint with whoever gave you the key. If you "
-             "didn't put this key on the card, tap Reject.", name, fp);
-    lv_obj_t *row = game_dialog_open(lv_layer_top(), "Trust a new app signing key?");
-    lv_obj_t *body = lv_label_create(lv_obj_get_parent(row));
-    lv_label_set_text(body, text);
-    lv_obj_set_width(body, 600);
+
+    lv_obj_t *v = s_trust = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(v);
+    lv_obj_set_size(v, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(v, lv_color_hex(0xC62828), 0);
+    lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
+    lv_obj_add_flag(v, LV_OBJ_FLAG_CLICKABLE);     /* nothing underneath gets taps */
+    lv_obj_clear_flag(v, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *t = trust_label(v, APP_FONT_LARGE, LV_SYMBOL_WARNING "  NEW APP SIGNING KEY");
+    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 18);
+
+    snprintf(text, sizeof(text),
+             "A new key was found on the SD card:  \"%s\"\n"
+             "Fingerprint  %s\n\n"
+             "If you did NOT just add this key yourself, STOP and tap Reject. Someone may be "
+             "trying to run their own code on this display.\n\n"
+             "Only trust it if you added it and the fingerprint matches the one its owner gave "
+             "you. Apps signed with it get full access to this display, including saved Wi-Fi "
+             "passwords and keys.", name, fp);
+    lv_obj_t *body = trust_label(v, APP_FONT_MEDIUM, text);
+    lv_obj_set_width(body, 740);
     lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(body, APP_FONT_MEDIUM, 0);
-    lv_obj_set_style_text_color(body, lv_color_hex(APP_COLOR_TEXT), 0);
-    lv_obj_move_to_index(body, 1);                /* between the title and the buttons */
-    game_dialog_button(row, LV_SYMBOL_OK "  Trust", trust_answer, (void *)1);
-    game_dialog_button(row, LV_SYMBOL_CLOSE "  Reject", trust_answer, NULL);
+    lv_obj_align(body, LV_ALIGN_TOP_MID, 0, 70);
+
+    /* Reject: big, bright, bottom left. The default. */
+    lv_obj_t *rb = lv_btn_create(v);
+    lv_obj_set_size(rb, 380, 96);
+    lv_obj_align(rb, LV_ALIGN_BOTTOM_LEFT, 24, -20);
+    lv_obj_set_style_radius(rb, 20, 0);
+    lv_obj_set_style_bg_color(rb, lv_color_white(), 0);
+    lv_obj_set_style_shadow_width(rb, 0, 0);
+    lv_obj_add_event_cb(rb, trust_reject, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *rl = trust_label(rb, APP_FONT_LARGE, LV_SYMBOL_CLOSE "  Reject");
+    lv_obj_set_style_text_color(rl, lv_color_hex(0xB71C1C), 0);
+    lv_obj_center(rl);
+
+    /* Trust: small, dim, far bottom right, hold to confirm. */
+    lv_obj_t *ab = lv_btn_create(v);
+    lv_obj_set_size(ab, 200, 56);
+    lv_obj_align(ab, LV_ALIGN_BOTTOM_RIGHT, -16, -16);
+    lv_obj_set_style_radius(ab, 10, 0);
+    lv_obj_set_style_bg_color(ab, lv_color_hex(0x263238), 0);
+    lv_obj_set_style_shadow_width(ab, 0, 0);
+    lv_obj_set_style_pad_all(ab, 6, 0);
+    lv_obj_add_event_cb(ab, trust_hold_event, LV_EVENT_ALL, NULL);
+    s_trust_bar = lv_bar_create(ab);
+    lv_obj_set_size(s_trust_bar, LV_PCT(100), 6);
+    lv_obj_align(s_trust_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_bar_set_range(s_trust_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_trust_bar, lv_color_hex(0x455A64), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_trust_bar, lv_color_hex(0xFFB74D), LV_PART_INDICATOR);
+    lv_obj_clear_flag(s_trust_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *al = trust_label(ab, LV_FONT_DEFAULT, "Trust (hold 3 seconds)");
+    lv_obj_set_style_text_color(al, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_align(al, LV_ALIGN_TOP_MID, 0, 6);
+
+    s_trust_since = lv_tick_get();
+    s_trust_hold = 0;
+    s_trust_ta = NULL;
+    s_trust_timer = lv_timer_create(trust_tick, 50, NULL);
     s_trust_open = true;
 }
 

@@ -3,7 +3,8 @@
  * Trust for SD card apps (.app files, see tools/appkey.py for the format):
  * trusted signing keys, developer mode, and checking an app file.
  *
- * - Built-in key: keys/builtin_app_key.pub, compiled into the firmware.
+ * - Built-in keys: every .pub file in the project's keys/ folder, compiled into the
+ *   firmware (up to 4; builtin_app_key.pub shows as "Built-in").
  * - Added keys: a .pub file in dashboard/import is read at start-up and the
  *   user is asked on screen (launcher) before it's trusted. A file on the
  *   card alone can never add trust.
@@ -73,5 +74,6 @@ void app_keys_import_dir(const char *dir);
 
 /* LVGL side: the next key waiting for an answer. */
 bool app_keys_pending(char *name, size_t name_len, uint8_t id[8]);
-/* Answers the pending key (trusts it if yes). False if saving failed. */
-bool app_keys_answer(bool yes);
+/* Answers the pending key: trusts it if yes, under name (the user's; NULL
+ * or empty keeps the file's). False if it couldn't be saved. */
+bool app_keys_answer(bool yes, const char *name);

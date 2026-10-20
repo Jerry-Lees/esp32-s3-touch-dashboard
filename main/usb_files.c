@@ -14,6 +14,7 @@
  *   @@sd put <size> <crc> <overwrite> <path>      @@ok put
  *   @@sd d <seq> <crc> <base64>  (each)   @@ack <seq> / @@nak <seq>, then @@ok done
  *   @@sd rm <path> / @@sd mkdir <path>    @@ok rm / @@ok mkdir
+ *   @@sd shot                             @@ok shot (a screenshot is taken)
  *   errors: @@err <message>
  *
  * Paths and names are percent-encoded (spaces, %, non-ASCII) and relative
@@ -41,6 +42,7 @@
 #include "ff.h"
 #include "mbedtls/base64.h"
 
+#include "screenshot.h"
 #include "sd_card.h"
 #include "usb_files.h"
 
@@ -429,6 +431,9 @@ static void task(void *arg)
         bool card = sd_card_mounted();
         if (!strncmp(c, "hello", 5)) {
             out("@@ok hello 1 %d\n", card);
+        } else if (!strcmp(c, "shot")) {
+            screenshot_request();
+            out("@@ok shot\n");
         } else if (!card) {
             out("@@err no SD card in the display\n");
         } else if (!strncmp(c, "ls ", 3) || !strcmp(c, "ls")) {

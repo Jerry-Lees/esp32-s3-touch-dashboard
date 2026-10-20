@@ -95,6 +95,49 @@ static bool save_bmp(const char *path, const uint16_t *px, int w, int h)
 /* Sends the pixels over the serial console for tools/screenshot.py. */
 static void send_usb(const uint8_t *buf, const lv_img_dsc_t *dsc);
 
+/* Blends the top layer (alarm alerts, the new-key warning, ...) over the
+ * screen's picture, so full-screen alerts show in screenshots too. */
+static void add_top_layer(uint16_t *px, int w, int h)
+{
+    lv_obj_t *top = lv_layer_top();
+    if (lv_obj_get_child_cnt(top) == 0) return;
+
+    /* A full-screen, opaque alert hides everything underneath: take the top
+     * layer as it is (blending can let the screen show through faintly). */
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(top); i++) {
+        lv_obj_t *c = lv_obj_get_child(top, i);
+        if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) && lv_obj_get_width(c) >= w &&
+            lv_obj_get_height(c) >= h && lv_obj_get_style_bg_opa(c, 0) == LV_OPA_COVER) {
+            lv_img_dsc_t dsc;
+            uint32_t size = lv_snapshot_buf_size_needed(top, LV_IMG_CF_TRUE_COLOR);
+            if (size == (uint32_t)w * h * 2) {
+                lv_snapshot_take_to_buf(top, LV_IMG_CF_TRUE_COLOR, &dsc, px, size);
+            }
+            return;
+        }
+    }
+
+    uint32_t size = lv_snapshot_buf_size_needed(top, LV_IMG_CF_TRUE_COLOR_ALPHA);
+    uint8_t *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    lv_img_dsc_t dsc;
+    if (!buf || lv_snapshot_take_to_buf(top, LV_IMG_CF_TRUE_COLOR_ALPHA, &dsc, buf, size) != LV_RES_OK ||
+        dsc.header.w != w || dsc.header.h != h) {
+        free(buf);
+        return;
+    }
+    for (int i = 0; i < w * h; i++) {
+        const uint8_t *s = buf + i * 3;            /* RGB565 low, high, alpha */
+        uint32_t a = s[2];
+        if (a == 0) continue;
+        uint16_t f = s[0] | s[1] << 8, b = px[i];
+        uint32_t r = (((f >> 11) & 31) * a + ((b >> 11) & 31) * (255 - a)) / 255;
+        uint32_t g = (((f >> 5) & 63) * a + ((b >> 5) & 63) * (255 - a)) / 255;
+        uint32_t bl = ((f & 31) * a + (b & 31) * (255 - a)) / 255;
+        px[i] = r << 11 | g << 5 | bl;
+    }
+    free(buf);
+}
+
 static void take(lv_timer_t *t)
 {
     (void)t;
@@ -111,6 +154,7 @@ static void take(lv_timer_t *t)
         free(buf);
         return;
     }
+    add_top_layer((uint16_t *)buf, dsc.header.w, dsc.header.h);
 
     if (sd_card_mounted()) {
         char path[96], msg[128];
@@ -155,8 +199,23 @@ static void long_pressed(lv_event_t *e)
     lv_timer_set_repeat_count(t, 1);
 }
 
+static bool s_requested;
+
+static void request_poll(lv_timer_t *t)
+{
+    (void)t;
+    if (__atomic_exchange_n(&s_requested, false, __ATOMIC_ACQ_REL)) take(NULL);
+}
+
+void screenshot_request(void)
+{
+    __atomic_store_n(&s_requested, true, __ATOMIC_RELEASE);
+}
+
 void screenshot_attach(lv_obj_t *obj)
 {
+    static lv_timer_t *poll;
+    if (!poll) poll = lv_timer_create(request_poll, 200, NULL);
     lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(obj, long_pressed, LV_EVENT_LONG_PRESSED, NULL);
 }

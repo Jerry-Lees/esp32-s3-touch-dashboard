@@ -215,10 +215,18 @@ leave. The example is a 1970s-style **Analog Clock** with a sweeping second hand
 - Copy a `.app` file into `dashboard/apps` (or use `tools/sdcard.py put my.app apps/`) and
   restart. Updated versions of an app run the next time it's opened.
 - **Only trusted apps run.** An app has full access to the display, so it must be signed with a
-  trusted key (ECDSA P-256). The firmware has one built-in key (`keys/builtin_app_key.pub`; its
-  private half is in the git-ignored `local-keys/`). Other people's keys can be added by putting
-  their `.pub` file in `dashboard/import`: the display shows its fingerprint and asks before
-  trusting it, so a file on the card can never add trust by itself.
+  trusted key (ECDSA P-256). Every `.pub` file in the project's `keys/` folder is built into the
+  firmware and always trusted (here `keys/builtin_app_key.pub`, whose private half is in the
+  git-ignored `local-keys/`). Built-in keys can only be changed by rebuilding the firmware.
+- **Adding someone else's key**: put their `.pub` file in `dashboard/import` and restart. A
+  full-screen, flashing warning shows the key's fingerprint and says to **stop and reject it if
+  you didn't just add it yourself**. Reject is the big default button; Trust is small, in the far
+  corner, and has to be held for 3 seconds. You then name the key yourself (the file's suggested
+  name is shown but marked as not verified, since anyone can write any name). A file on the card
+  can never add trust by itself. Added keys (up to 8) are listed in Settings > Apps with Remove.
+
+![New key warning](docs/screenshots/trust_key.png)
+
 - **Settings > Apps** lists the card's apps (signed by whom, or why one won't run), the trusted
   keys (with Remove) and **developer mode**: like Android's, it lets unsigned apps run, each one
   only after you approve that exact file. **DEV** shows on the home screen while it's on.
@@ -442,8 +450,12 @@ $PY tools/sdcard.py put *.jpg pictures/          # PC -> card
 $PY tools/sdcard.py get screenshots ./shots      # card -> PC (one file or a whole folder)
 $PY tools/sdcard.py rm pictures/old.jpg          # a file or an empty folder
 $PY tools/sdcard.py mkdir pictures/holiday
+$PY tools/sdcard.py shot                         # take a screenshot now
 ```
 
+- `shot` takes a screenshot without touching the screen, for screens whose top bar can't be
+  long-pressed (full-screen alerts such as an alarm or the new-key warning, which screenshots
+  include).
 - About 200 KB/s each way. Every 2 KB chunk is checked and acknowledged, so a damaged or lost chunk
   is sent again, and a file is only saved once its whole-file checksum matches. Interrupted copies
   leave nothing behind.

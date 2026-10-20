@@ -13,7 +13,7 @@ when you open it, and unloads it when you leave.
 An app is native code with **full access to the display**: saved Wi-Fi passwords, the Jellyfin
 key, everything. The ESP32 can't fence it off. So the display only runs apps that are:
 
-- **signed by a trusted key**: the built-in key (`keys/builtin_app_key.pub`, compiled into the
+- **signed by a trusted key**: the built-in keys (every `.pub` file in `keys/`, compiled into the
   firmware) or keys you've accepted on screen, or
 - **unsigned, in developer mode**, after you approve that exact file on screen (it asks again
   if the file changes).
@@ -91,9 +91,11 @@ code is unloaded about a second later.
   **Settings > Apps > Developer mode** on, and asks before running (DEV shows on the home screen
   while developer mode is on).
 - To run someone else's signed apps, put their public key (`something.pub`) in
-  `dashboard/import` and restart. The display shows the key's name and fingerprint and asks
-  before trusting it. Check the fingerprint with them. Keys are listed (and removed) in
-  Settings > Apps.
+  `dashboard/import` and restart. A full-screen warning shows the key's fingerprint: check it
+  with them, hold **Trust** for 3 seconds, then give the key a name (the file name is only a
+  suggestion). Keys are listed (and removed) in Settings > Apps.
+- To make another key always trusted by your firmware, copy its `.pub` file into `keys/` and
+  rebuild (up to 4 built-in keys).
 - To make a key pair for someone else: `tools/appkey.py genkey --out ~/their-keys`. The display
   names a key after its file, so rename `app_signing_key.pub` to e.g. `bobs_apps.pub` before
   sharing it.
