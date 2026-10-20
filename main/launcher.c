@@ -12,6 +12,9 @@
 
 #include "lvgl.h"
 #include "app_framework.h"
+#include "app_keys.h"
+#include "ext_apps.h"
+#include "game_common.h"
 #include "launcher.h"
 #include "clock_tools.h"
 #include "net_time.h"
@@ -48,6 +51,27 @@ static const app_t games_folder = {
     .folder    = s_games,
 };
 
+/* SD card apps (ext_apps.c), refilled by layout_home(). The folder is only
+ * on the home screen when it has something in it. */
+static const app_t *s_custom[EXT_MAX_APPS + 1];
+extern const lv_img_dsc_t img_elf_icon;
+
+static void elf_tile_icon(lv_obj_t *holder, int size)
+{
+    lv_obj_t *img = lv_img_create(holder);
+    lv_img_set_src(img, &img_elf_icon);
+    lv_img_set_zoom(img, (uint16_t)(256 * size / img_elf_icon.header.w));
+    lv_obj_center(img);
+}
+
+static const app_t custom_folder = {
+    .name      = "Custom Apps",
+    .symbol    = LV_SYMBOL_DIRECTORY,
+    .color_hex = 0x3949AB,
+    .folder    = s_custom,
+    .draw_icon = elf_tile_icon,
+};
+
 static const app_t *const s_apps[] = {
     &world_clock_app,
     &timers_app,
@@ -67,6 +91,9 @@ static lv_obj_t   *s_home_scr;
 static lv_obj_t   *s_home_clock;
 static lv_obj_t   *s_home_wifi;
 static lv_obj_t   *s_home_status;  /* next alarm / running timer */
+static lv_obj_t   *s_home_dev;     /* "DEV" while developer mode is on */
+static bool        s_home_dirty;   /* SD apps changed: rebuild the grid */
+static bool        s_trust_open;   /* a "trust this key?" dialog is up */
 static lv_obj_t   *s_home_grid;
 static lv_obj_t   *s_home_ticker;  /* info ticker strip, or NULL */
 static lv_obj_t   *s_folder_scr;    /* open folder's screen, or NULL */
@@ -103,7 +130,9 @@ static lv_obj_t *make_screen(void)
 static void make_back_button(lv_obj_t *bar, const char *to, lv_event_cb_t cb)
 {
     lv_obj_t *back = lv_btn_create(bar);
-    lv_obj_set_size(back, 130, 44);
+    lv_obj_set_size(back, LV_SIZE_CONTENT, 44);   /* grows for long names ("Custom Apps") */
+    lv_obj_set_style_min_width(back, 130, 0);
+    lv_obj_set_style_pad_hor(back, 18, 0);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_radius(back, 22, 0);
     lv_obj_add_event_cb(back, cb, LV_EVENT_CLICKED, NULL);
@@ -457,6 +486,9 @@ static void home_tick(lv_timer_t *t)
     if (lv_scr_act() != s_home_scr) {
         return;
     }
+    if (app_keys_dev_mode()) lv_obj_clear_flag(s_home_dev, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(s_home_dev, LV_OBJ_FLAG_HIDDEN);
+    if (s_home_dirty && !s_edit_grid) layout_home();
 
     lv_obj_set_style_text_color(
         s_home_wifi,
@@ -565,7 +597,15 @@ static void layout_home(void)
 
     bool ticker = settings_get_ticker();
     lv_coord_t h = lv_disp_get_ver_res(NULL) - BAR_H - (ticker ? TICKER_H : 0);
-    s_home_grid = build_grid(s_home_scr, s_apps, APP_COUNT, h, ticker, "ord_home");
+    /* Built-in apps, plus the Custom Apps folder when the card has apps. */
+    const app_t *all[GRID_MAX];
+    size_t n = APP_COUNT;
+    memcpy(all, s_apps, sizeof(s_apps));
+    int ext = ext_apps_tiles(s_custom, EXT_MAX_APPS);
+    s_custom[ext] = NULL;
+    if (ext > 0) all[n++] = &custom_folder;
+    s_home_grid = build_grid(s_home_scr, all, n, h, ticker, "ord_home");
+    s_home_dirty = false;
     if (ticker) {
         s_home_ticker = ticker_create(s_home_scr);
         ticker_set_running(lv_scr_act() == s_home_scr);
@@ -600,6 +640,19 @@ static void build_home(void)
     lv_obj_set_style_text_font(title, APP_FONT_LARGE, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(APP_COLOR_TEXT), 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* Reminder that unsigned SD apps may run (Settings > Apps). */
+    s_home_dev = lv_label_create(bar);
+    lv_label_set_text(s_home_dev, "DEV");
+    lv_obj_set_style_text_font(s_home_dev, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(s_home_dev, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_bg_color(s_home_dev, lv_color_hex(0xFF9800), 0);
+    lv_obj_set_style_bg_opa(s_home_dev, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_home_dev, 6, 0);
+    lv_obj_set_style_pad_hor(s_home_dev, 8, 0);
+    lv_obj_set_style_pad_ver(s_home_dev, 2, 0);
+    lv_obj_align(s_home_dev, LV_ALIGN_LEFT_MID, 140, 0);
+    lv_obj_add_flag(s_home_dev, LV_OBJ_FLAG_HIDDEN);
 
     s_home_clock = lv_label_create(bar);
     lv_obj_set_style_text_font(s_home_clock, APP_FONT_MEDIUM, 0);
@@ -749,6 +802,11 @@ static void toast_clicked(lv_event_t *e)
     s_toast = NULL;
 }
 
+const app_t *launcher_current_app(void)
+{
+    return s_current_app;
+}
+
 void launcher_toast(const char *text, uint32_t ms)
 {
     if (s_toast) lv_obj_del(s_toast);
@@ -782,6 +840,48 @@ void launcher_toast(const char *text, uint32_t ms)
     lv_timer_set_repeat_count(s_toast_timer, 1);
 }
 
+/* ---------- "trust this key?" (a .pub file was in dashboard/import) ---------- */
+
+static void trust_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    game_dialog_close();
+    s_trust_open = false;
+    if (!app_keys_answer(yes)) {
+        launcher_toast("Not trusted: there are already 8 keys. Remove one in Settings > Apps.",
+                       8000);
+    } else if (yes) {
+        launcher_toast("Key trusted. Apps signed with it can now run.", 5000);
+    }
+    ext_apps_rescan();
+}
+
+static void trust_prompt(void)
+{
+    char name[APPK_NAME_MAX], fp[24], text[400];
+    uint8_t id[8];
+    if (s_trust_open || s_wake_catcher || lv_scr_act() != s_home_scr ||
+        !app_keys_pending(name, sizeof(name), id)) {
+        return;
+    }
+    app_keys_fingerprint(id, fp, sizeof(fp));
+    snprintf(text, sizeof(text), "Apps signed with the key \"%s\" will be able to run on this "
+             "display, with full access to it (including saved Wi-Fi passwords).\n\n"
+             "Fingerprint: %s\n\nCheck the fingerprint with whoever gave you the key. If you "
+             "didn't put this key on the card, tap Reject.", name, fp);
+    lv_obj_t *row = game_dialog_open(lv_layer_top(), "Trust a new app signing key?");
+    lv_obj_t *body = lv_label_create(lv_obj_get_parent(row));
+    lv_label_set_text(body, text);
+    lv_obj_set_width(body, 600);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(body, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_text_color(body, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_move_to_index(body, 1);                /* between the title and the buttons */
+    game_dialog_button(row, LV_SYMBOL_OK "  Trust", trust_answer, (void *)1);
+    game_dialog_button(row, LV_SYMBOL_CLOSE "  Reject", trust_answer, NULL);
+    s_trust_open = true;
+}
+
 static void notice_tick(lv_timer_t *t)
 {
     (void)t;
@@ -790,6 +890,8 @@ static void notice_tick(lv_timer_t *t)
         /* Problems stay up longer so there's time to read them. */
         launcher_toast(msg, strstr(msg, "not imported") ? 15000 : 6000);
     }
+    if (ext_apps_poll()) s_home_dirty = true;
+    trust_prompt();
 }
 
 /* Runs until the meter exists, then applies the setting once. */
@@ -804,6 +906,8 @@ static void fps_init_tick(lv_timer_t *t)
 void launcher_start(void)
 {
     settings_init();   /* also initializes NVS, before Wi-Fi needs it */
+    app_keys_init();
+    ext_apps_init();
     wifi_list_init();
     net_time_start();
     build_home();

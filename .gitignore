@@ -3,3 +3,6 @@ managed_components/
 main/wifi_secrets.h
 main/jellyfin_secrets.h
 __pycache__/
+local-keys/
+apps/*/dependencies.lock
+apps/*/managed_components/

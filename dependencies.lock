@@ -1,4 +1,16 @@
 dependencies:
+  espressif/cmake_utilities:
+    dependencies: []
+    source:
+      path: /var/home/dad/esp/my_display/components/espressif__cmake_utilities
+      type: local
+    version: 0.5.3
+  espressif/elf_loader:
+    dependencies: []
+    source:
+      path: /var/home/dad/esp/my_display/components/espressif__elf_loader
+      type: local
+    version: 1.3.5
   espressif/esp_lcd_touch:
     dependencies: []
     source:
@@ -22,10 +34,12 @@ dependencies:
       type: local
     version: 8.4.0
 direct_dependencies:
+- espressif/cmake_utilities
+- espressif/elf_loader
 - espressif/esp_lcd_touch
 - espressif/esp_lcd_touch_gt911
 - idf
 - lvgl/lvgl
-manifest_hash: d5d266152de678f38563fb78535c96ea22d9ead88642e70bb4e988de7ac24ddd
+manifest_hash: e9cb036a3ffd89fddbfcea905acbe36a5a9f364a1dd339b978c9fb2523081a78
 target: esp32s3
 version: 2.0.0

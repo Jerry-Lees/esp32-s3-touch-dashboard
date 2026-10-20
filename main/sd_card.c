@@ -26,6 +26,8 @@
 #include "sdmmc_cmd.h"
 
 #include "net_time.h"
+#include "app_keys.h"
+#include "ext_apps.h"
 #include "sd_card.h"
 #include "settings_backup.h"
 #include "wifi_list.h"
@@ -114,7 +116,9 @@ static const char README_TXT[] =
     "backup/       Settings backups (Settings > About > Back up settings). They\r\n"
     "              never include Wi-Fi networks. To restore one, copy it into\r\n"
     "              import/ and restart the display.\r\n"
-    "apps/         Reserved for apps loaded from the card.\r\n"
+    "apps/         Apps (.app files). They run only if signed by a trusted key\r\n"
+    "              (Settings > Apps). A .pub key file in import/ is offered\r\n"
+    "              for trust on screen at the next start.\r\n"
     "\r\n"
     "Files can be copied to and from these folders over the USB cable,\r\n"
     "without taking the card out: tools/sdcard.py in the project.\r\n";
@@ -333,6 +337,8 @@ static void mount_task(void *arg)
         ESP_LOGI(TAG, "Mounted at " SD_MOUNT_POINT);
         make_folders();
         import_wifi();
+        app_keys_import_dir(SD_DIR "/import");   /* asked on screen, see launcher.c */
+        ext_apps_rescan();
         if (settings_backup_import(sd_card_notice)) {
             vTaskDelay(pdMS_TO_TICKS(4000));      /* time to read the message */
             esp_restart();                       /* every app reloads its settings */

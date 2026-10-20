@@ -2,8 +2,9 @@
 
 A home dashboard and games console for a 4.3" ESP32-S3 touch screen, written in C with
 **ESP-IDF 5.5** and **LVGL 8.4**. It has a launcher with app tiles, a world clock, weather,
-a stock watchlist, five games and a settings app. A scrolling info ticker along the bottom of the
-home screen keeps the weather and stocks up to date in the background.
+a stock watchlist, five games and a settings app, and it can run **apps loaded from the SD card**
+(signed, so only apps you trust run). A scrolling info ticker along the bottom of the home screen
+keeps the weather and stocks up to date in the background.
 
 ![Home screen with the info ticker](docs/screenshots/home.png)
 
@@ -200,6 +201,34 @@ How the key is kept safe:
 - With an `http://` address the key travels unencrypted over your home network on each request.
   That's normal for a Jellyfin server on a LAN; use `https://` if your server has it.
 
+### Custom Apps (from the SD card)
+
+| | |
+|---|---|
+| ![Analog Clock app](docs/screenshots/analog_clock.png) | ![Custom Apps folder](docs/screenshots/custom_apps.png) |
+| ![Settings, Apps tab](docs/screenshots/settings_apps.png) | ![Settings, developer mode](docs/screenshots/settings_apps_dev.png) |
+
+Apps can be loaded from the SD card without rebuilding the firmware. They live in the **Custom
+Apps** folder (the elf on a shelf) and are loaded into memory when opened, then unloaded when you
+leave. The example is a 1970s-style **Analog Clock** with a sweeping second hand.
+
+- Copy a `.app` file into `dashboard/apps` (or use `tools/sdcard.py put my.app apps/`) and
+  restart. Updated versions of an app run the next time it's opened.
+- **Only trusted apps run.** An app has full access to the display, so it must be signed with a
+  trusted key (ECDSA P-256). The firmware has one built-in key (`keys/builtin_app_key.pub`; its
+  private half is in the git-ignored `local-keys/`). Other people's keys can be added by putting
+  their `.pub` file in `dashboard/import`: the display shows its fingerprint and asks before
+  trusting it, so a file on the card can never add trust by itself.
+- **Settings > Apps** lists the card's apps (signed by whom, or why one won't run), the trusted
+  keys (with Remove) and **developer mode**: like Android's, it lets unsigned apps run, each one
+  only after you approve that exact file. **DEV** shows on the home screen while it's on.
+- Trusted keys and developer mode are kept apart from the other settings, so restoring a
+  settings backup from the card can't change them.
+
+Making apps: see [apps/README.md](apps/README.md). In short, `tools/build_app.sh apps/my_app`
+builds and signs one. Apps use LVGL and a small dashboard API
+(`sdk/dashboard_sdk/include/dashboard_app.h`).
+
 ### Games
 
 ![Games folder](docs/screenshots/games.png)
@@ -227,7 +256,8 @@ saved in flash.
 
 Tabs for Network (Wi-Fi status, signal and your saved networks, with Remove), Display (screen timeout, info ticker, FPS meter),
 Time (12/24-hour, time source), Weather (default city, ticker cities), St0nks (show the watchlist
-in the ticker) and About (chip, memory, versions, settings backup). Settings are stored in the ESP32's NVS flash
+in the ticker), Apps (SD card apps, trusted keys, developer mode) and About (chip, memory,
+versions, settings backup). Settings are stored in the ESP32's NVS flash
 area and survive reboots and reflashing.
 
 ## Building and flashing
@@ -246,6 +276,10 @@ LVGL 8.4 and the touch drivers are included in `components/`.
    ```
    *Optional:* `main/jellyfin_secrets.h` with your Jellyfin server and API key (also in
    `.gitignore`; see [Setting up Jellyfin](#setting-up-jellyfin)).
+   *Optional:* your own app signing key. The repository's `keys/builtin_app_key.pub` is the
+   project author's; to sign apps yourself, run
+   `~/.espressif/python_env/idf5.5_py3.14_env/bin/python tools/appkey.py genkey --force`, which
+   replaces it with yours (the private half goes to the git-ignored `local-keys/`).
 3. Build and flash (board connected over USB-C):
    ```bash
    . ~/esp/esp-idf/export.sh
@@ -299,7 +333,7 @@ startup). It creates one folder, `dashboard`, and never touches anything else on
 | `dashboard/pictures/` | Pictures for the [Photos](#photos) slideshow and the screensaver (JPEG, PNG, GIF, BMP; folders inside are included). |
 | `dashboard/screenshots/` | Screenshots: long-press the top bar on any screen (see [Taking screenshots](#taking-screenshots)). |
 | `dashboard/backup/` | Settings backups (see [Backing up settings](#backing-up-settings)). Never include Wi-Fi networks. |
-| `dashboard/apps/` | Reserved for apps loaded from the card. |
+| `dashboard/apps/` | Apps (`.app` files) for the [Custom Apps](#custom-apps-from-the-sd-card) folder. Only signed or approved ones run. |
 
 A `README.txt` in the `dashboard` folder explains the same thing.
 
@@ -439,6 +473,9 @@ $PY tools/sdcard.py mkdir pictures/holiday
 | `main/jellyfin.c`, `main/app_jellyfin.c` | Jellyfin client (server settings, polling, cover art, remote control) and the app |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
+| `main/ext_apps.c`, `main/app_keys.c`, `main/app_symbols.c` | SD card apps: loading, signature checks / trusted keys / developer mode, and what apps may call |
+| `sdk/`, `apps/`, `keys/` | App SDK (header and build settings), example apps, the built-in public signing key |
+| `tools/appkey.py`, `tools/build_app.sh` | Make signing keys; build and sign apps |
 | `tools/` | Image generators, the screenshot receiver and the USB file tool |
 | `CLAUDE.md` | Detailed developer notes |
 
@@ -446,6 +483,8 @@ $PY tools/sdcard.py mkdir pictures/holiday
 
 - Started from Waveshare's ESP-IDF LVGL porting demo for this board.
 - [LVGL](https://lvgl.io/) 8.4 (MIT licence).
+- Espressif's [elf_loader](https://components.espressif.com/components/espressif/elf_loader) 1.3.5
+  and cmake_utilities (Apache 2.0), in `components/`.
 - Weather data: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).
 - Stock prices: Yahoo Finance; earnings dates: Nasdaq. For personal use; data is delayed and not
   investment advice.

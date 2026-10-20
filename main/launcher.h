@@ -19,3 +19,7 @@ void launcher_toast(const char *text, uint32_t ms);
 /* Turns the screen back on if it timed out (and stops the photo
  * screensaver), and restarts the timeout. LVGL task only. */
 void launcher_wake(void);
+
+/* The app on screen (set before its create() runs), or NULL. */
+struct app_s;
+const struct app_s *launcher_current_app(void);

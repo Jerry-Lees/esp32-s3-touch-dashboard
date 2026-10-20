@@ -1,5 +1,5 @@
 /*
- * Settings app: tabs for Network, Display, Time, Weather and About.
+ * Settings app: tabs for Network, Display, Time, Weather, St0nks, Apps and About.
  *
  * Choices are saved through settings.c (NVS), so they survive a reboot.
  * Other apps read them with the settings_get_*() functions.
@@ -22,6 +22,8 @@
 
 #include "lvgl.h"
 #include "app_framework.h"
+#include "app_keys.h"
+#include "ext_apps.h"
 #include "game_common.h"
 #include "launcher.h"
 #include "net_time.h"
@@ -55,6 +57,8 @@ static struct {
     char      net_shown[WIFI_SSID_MAX + 1];   /* connected network when the list was drawn */
     lv_obj_t *time_preview, *time_source;
     lv_obj_t *about_heap, *about_psram, *about_uptime;
+    lv_obj_t *apps_list, *keys_list, *dev_cb;
+    uint32_t  apps_version;
 } ui;
 
 /* ---------- small UI helpers ---------- */
@@ -308,8 +312,11 @@ static void update_about(void)
     lv_label_set_text(ui.about_uptime, buf);
 }
 
+static void rebuild_apps(void);
+
 static void tick(lv_timer_t *t)
 {
+    if (ui.apps_list && ext_apps_version() != ui.apps_version) rebuild_apps();
     (void)t;
     update_network();
     update_time_preview();
@@ -940,6 +947,179 @@ static void build_stonks_tab(lv_obj_t *tab)
                "the St0nks app. Turn the ticker itself on in the Display tab.");
 }
 
+/* ---------- Apps: SD card apps, trusted keys, developer mode ---------- */
+
+static int s_key_remove;
+
+/* "Name ... detail" row in a list; returns the row. */
+static lv_obj_t *mk_list_row(lv_obj_t *list, const char *name, const char *detail,
+                             uint32_t detail_color)
+{
+    lv_obj_t *r = lv_obj_create(list);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(r, 56, 0);
+    lv_obj_set_style_radius(r, 10, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(0x232D36), 0);
+    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(r, 14, 0);
+    lv_obj_set_style_pad_ver(r, 8, 0);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(r, 2, 0);
+    lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    mk_label(r, APP_FONT_MEDIUM, APP_COLOR_TEXT, name);
+    lv_obj_t *d = mk_label(r, LV_FONT_DEFAULT, detail_color, detail);
+    lv_obj_set_width(d, 560);
+    lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+    return r;
+}
+
+static void key_remove_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    game_dialog_close();
+    if (yes && app_keys_remove(s_key_remove)) {
+        launcher_toast("Key removed. Apps signed with it won't run any more.", 5000);
+        ext_apps_rescan();
+        rebuild_apps();
+    }
+}
+
+static void key_remove_clicked(lv_event_t *e)
+{
+    s_key_remove = (int)(intptr_t)lv_event_get_user_data(e);
+    appk_key_t k;
+    if (!app_keys_get(s_key_remove, &k)) return;
+    char title[80];
+    snprintf(title, sizeof(title), "Stop trusting \"%s\"?", k.name);
+    lv_obj_t *row = game_dialog_open(ui.root, title);
+    game_dialog_button(row, LV_SYMBOL_TRASH "  Remove", key_remove_answer, (void *)1);
+    game_dialog_button(row, "Cancel", key_remove_answer, NULL);
+}
+
+static void rebuild_apps(void)
+{
+    ui.apps_version = ext_apps_version();
+    lv_obj_clean(ui.apps_list);
+    int n = ext_apps_count();
+    if (n == 0) {
+        mk_note(ui.apps_list, "No apps found. Put .app files in dashboard/apps on the SD card "
+                              "and restart the display.");
+    }
+    for (int i = 0; i < n; i++) {
+        ext_app_info_t a;
+        if (!ext_apps_get(i, &a)) continue;
+        char name[64], detail[256];
+        snprintf(name, sizeof(name), "%s %s", a.name, a.version);
+        uint32_t color = 0x66BB6A;
+        switch (a.status) {
+        case APPK_OK:
+            snprintf(detail, sizeof(detail), LV_SYMBOL_OK "  Signed by \"%s\"  (%s)",
+                     a.signer, a.file);
+            break;
+        case APPK_OK_DEV:
+            snprintf(detail, sizeof(detail), "Unsigned, approved in developer mode  (%s)", a.file);
+            color = 0xFFB74D;
+            break;
+        case APPK_NEEDS_APPROVAL:
+            snprintf(detail, sizeof(detail), "Unsigned: asks before it runs  (%s)", a.file);
+            color = 0xFFB74D;
+            break;
+        default:
+            snprintf(detail, sizeof(detail), LV_SYMBOL_CLOSE "  Won't run: %s  (%s)", a.why, a.file);
+            color = 0xEF5350;
+            break;
+        }
+        mk_list_row(ui.apps_list, name, detail, color);
+    }
+
+    lv_obj_clean(ui.keys_list);
+    for (int i = 0; i < app_keys_count(); i++) {
+        appk_key_t k;
+        if (!app_keys_get(i, &k)) continue;
+        char fp[24], detail[64];
+        app_keys_fingerprint(k.id, fp, sizeof(fp));
+        snprintf(detail, sizeof(detail), "Fingerprint %s%s", fp, k.builtin ? "  -  built in" : "");
+        lv_obj_t *r = mk_list_row(ui.keys_list, k.name, detail, APP_COLOR_SUBTEXT);
+        if (!k.builtin) {
+            lv_obj_t *b = mk_btn(r, LV_SYMBOL_TRASH "  Remove", 140, key_remove_clicked, 0x5D1F1F);
+            lv_obj_add_flag(b, LV_OBJ_FLAG_IGNORE_LAYOUT);
+            lv_obj_align(b, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_remove_event_cb(b, key_remove_clicked);
+            lv_obj_add_event_cb(b, key_remove_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+    }
+}
+
+static void dev_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    game_dialog_close();
+    if (yes) {
+        app_keys_set_dev_mode(true);
+        ext_apps_rescan();
+    } else {
+        lv_obj_clear_state(ui.dev_cb, LV_STATE_CHECKED);
+    }
+}
+
+static void dev_changed(lv_event_t *e)
+{
+    if (!is_checked(e)) {
+        app_keys_set_dev_mode(false);
+        ext_apps_rescan();
+        launcher_toast("Developer mode off. Unsigned apps won't run.", 4000);
+        return;
+    }
+    lv_obj_t *row = game_dialog_open(ui.root, "Turn on developer mode?");
+    lv_obj_t *body = mk_label(lv_obj_get_parent(row), APP_FONT_MEDIUM, APP_COLOR_TEXT,
+                              "Unsigned apps from the SD card will be able to run, after you "
+                              "approve each one. An app has full access to this display, "
+                              "including saved Wi-Fi passwords and keys. Only for apps you "
+                              "make yourself.");
+    lv_obj_set_width(body, 600);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_obj_move_to_index(body, 1);
+    game_dialog_button(row, "Turn on", dev_answer, (void *)1);
+    game_dialog_button(row, "Cancel", dev_answer, NULL);
+}
+
+static void build_apps_tab(lv_obj_t *tab)
+{
+    lv_obj_t *p = mk_panel(tab);
+    mk_label(p, APP_FONT_MEDIUM, APP_COLOR_TEXT, "Apps on the SD card");
+    ui.apps_list = lv_obj_create(p);
+    lv_obj_remove_style_all(ui.apps_list);
+    lv_obj_set_size(ui.apps_list, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ui.apps_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ui.apps_list, 8, 0);
+    lv_obj_clear_flag(ui.apps_list, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    mk_note(p, "Apps are .app files in dashboard/apps. They run only if they're signed by a "
+               "trusted key below (or, in developer mode, after you approve them). Apps run with "
+               "full access to the display, so install only apps you trust.");
+
+    lv_obj_t *kp = mk_panel(tab);
+    mk_label(kp, APP_FONT_MEDIUM, APP_COLOR_TEXT, "Trusted signing keys");
+    ui.keys_list = lv_obj_create(kp);
+    lv_obj_remove_style_all(ui.keys_list);
+    lv_obj_set_size(ui.keys_list, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ui.keys_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ui.keys_list, 8, 0);
+    lv_obj_clear_flag(ui.keys_list, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    mk_note(kp, "To trust someone else's apps, copy their .pub key file into dashboard/import on "
+                "the SD card and restart. The display shows the key's fingerprint and asks you "
+                "first; a file on the card can never add a key by itself.");
+
+    lv_obj_t *dp = mk_panel(tab);
+    ui.dev_cb = mk_checkbox(dp, "Developer mode (allow unsigned apps)", app_keys_dev_mode(),
+                            dev_changed);
+    mk_note(dp, "For making your own apps. Each unsigned app asks once before it runs, and "
+                "again whenever the file changes. While it's on, DEV shows on the home screen. "
+                "Turning it off forgets every approval.");
+    rebuild_apps();
+}
+
 static void backup_clicked(lv_event_t *e)
 {
     (void)e;
@@ -1024,12 +1204,13 @@ static void settings_create(lv_obj_t *parent)
     lv_obj_set_style_bg_color(content, lv_color_hex(APP_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
 
-    build_network_tab(mk_tab(tv, LV_SYMBOL_WIFI " Network"));
-    build_display_tab(mk_tab(tv, LV_SYMBOL_EYE_OPEN " Display"));
-    build_time_tab(mk_tab(tv, LV_SYMBOL_BELL " Time"));
-    build_weather_tab(mk_tab(tv, LV_SYMBOL_HOME " Weather"));
-    build_stonks_tab(mk_tab(tv, LV_SYMBOL_UP " St0nks"));
-    build_about_tab(mk_tab(tv, LV_SYMBOL_LIST " About"));
+    build_network_tab(mk_tab(tv, "Network"));
+    build_display_tab(mk_tab(tv, "Display"));
+    build_time_tab(mk_tab(tv, "Time"));
+    build_weather_tab(mk_tab(tv, "Weather"));
+    build_stonks_tab(mk_tab(tv, "St0nks"));
+    build_apps_tab(mk_tab(tv, "Apps"));
+    build_about_tab(mk_tab(tv, "About"));
 
     tick(NULL);
     s_timer = lv_timer_create(tick, 1000, NULL);
