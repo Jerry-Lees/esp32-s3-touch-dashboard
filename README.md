@@ -106,7 +106,7 @@ top of the card.
 | | |
 |---|---|
 | ![Files](docs/screenshots/files.png) | ![File menu](docs/screenshots/files_menu.png) |
-| ![Viewing a picture](docs/screenshots/files_picture.png) | |
+| ![Viewing a picture](docs/screenshots/files_picture.png) | ![Viewing a text file](docs/screenshots/files_text.png) |
 
 - Shows each item's size and date, the number of items, and the card's free space. Sort by name,
   date (newest first) or size (biggest first); folders come first. Large folders are shown 50 at a
