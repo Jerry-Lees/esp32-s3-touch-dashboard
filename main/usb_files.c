@@ -16,6 +16,8 @@
  *   @@sd rm <path> / @@sd mkdir <path>    @@ok rm / @@ok mkdir
  *   @@sd shot                             @@ok shot (a screenshot is taken)
  *   @@sd mem                              @@m <text> lines, then @@ok mem (memory report)
+ *   @@sd dashpad <host> <port> <secret>   @@ok dashpad (pairs DashPad with the PC helper;
+ *                                         the secret is never echoed or logged)
  *   errors: @@err <message>
  *
  * Paths and names are percent-encoded (spaces, %, non-ASCII) and relative
@@ -44,9 +46,11 @@
 #include "ff.h"
 #include "mbedtls/base64.h"
 
+#include "dashpad.h"
 #include "screenshot.h"
 #include "sd_card.h"
 #include "usb_files.h"
+#include "usb_kbd.h"
 
 static const char *TAG = "usb_files";
 
@@ -453,6 +457,26 @@ static void cmd_mem(void)
     out("@@ok mem\n");
 }
 
+/* Pairing from tools/dashpad_helper.py pair: "<host> <port> <secret>". */
+static void cmd_dashpad(const char *args)
+{
+    char host[64] = "", token[80] = "";
+    int port = 0;
+    bool ok = sscanf(args, "%63s %d %79s", host, &port, token) == 3 && port > 0 &&
+              port < 65536 && strlen(token) >= 32;
+    for (const char *p = host; ok && *p; p++) {
+        ok = isalnum((unsigned char)*p) || *p == '.' || *p == '-';
+    }
+    for (const char *p = token; ok && *p; p++) ok = isxdigit((unsigned char)*p);
+    if (ok) {
+        dashpad_pair_request(host, port, token);
+        out("@@ok dashpad\n");
+    } else {
+        out("@@err bad pairing details\n");
+    }
+    memset(token, 0, sizeof(token));
+}
+
 static void task(void *arg)
 {
     (void)arg;
@@ -464,6 +488,8 @@ static void task(void *arg)
         bool card = sd_card_mounted();
         if (!strncmp(c, "hello", 5)) {
             out("@@ok hello 1 %d\n", card);
+        } else if (!strncmp(c, "dashpad ", 8)) {
+            cmd_dashpad(c + 8);
         } else if (!strcmp(c, "mem")) {
             cmd_mem();
         } else if (!strcmp(c, "shot")) {
@@ -492,6 +518,7 @@ static void task(void *arg)
 
 void usb_files_start(void)
 {
+    usb_kbd_boot_fix();          /* the port may still be a keyboard after a restart */
     usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = 8192, .tx_buffer_size = 4096 };
     s_line = heap_caps_malloc(LINE_MAX + 1, MALLOC_CAP_SPIRAM);
     s_out = heap_caps_malloc(LINE_MAX + 1, MALLOC_CAP_SPIRAM);

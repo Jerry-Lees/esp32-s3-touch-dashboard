@@ -1,0 +1,10 @@
+{
+  "port": 8765,
+  "actions": {
+    "terminal": { "run": [["konsole"], ["gnome-terminal"], ["xterm"]] },
+    "steam":    { "run": [["steam"]] },
+    "firefox":  { "run": [["flatpak", "run", "org.mozilla.firefox"], ["firefox"]] },
+    "text":     { "run": [["kwrite"], ["gnome-text-editor"], ["kate", "--new"]] },
+    "lock":     { "run": [["loginctl", "lock-session"]] }
+  }
+}

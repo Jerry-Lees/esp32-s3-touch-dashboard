@@ -16,6 +16,7 @@
 #include "ext_apps.h"
 #include "launcher.h"
 #include "clock_tools.h"
+#include "dashpad.h"
 #include "net_time.h"
 #include "photo_frame.h"
 #include "settings.h"
@@ -79,6 +80,7 @@ static const app_t *const s_apps[] = {
     &photos_app,
     &files_app,
     &jellyfin_app,
+    &dashpad_app,
     &games_folder,
     &settings_app,
 };
@@ -1081,6 +1083,7 @@ void launcher_start(void)
     settings_init();   /* also initializes NVS, before Wi-Fi needs it */
     app_keys_init();
     ext_apps_init();
+    dashpad_init();
     wifi_list_init();
     net_time_start();
     build_home();

@@ -51,6 +51,7 @@ extern const app_t photos_app;
 extern const app_t files_app;
 extern const app_t timers_app;
 extern const app_t jellyfin_app;
+extern const app_t dashpad_app;
 extern const app_t settings_app;
 
 /* Weather locations, so Settings can offer a default-city choice. */

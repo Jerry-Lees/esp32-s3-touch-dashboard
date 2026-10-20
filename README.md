@@ -201,6 +201,80 @@ How the key is kept safe:
 - With an `http://` address the key travels unencrypted over your home network on each request.
   That's normal for a Jellyfin server on a LAN; use `https://` if your server has it.
 
+### DashPad
+
+A macro pad: pages of big buttons (5 x 3 per page, up to 8 pages) that do things on your PC or
+your network. Each button has a label, a symbol and a colour, and one action:
+
+- **Run on PC:** asks the PC helper (below) to run a named action, such as opening a terminal.
+  It can also have **keys** to send instead when the helper is off or can't be reached.
+- **Keyboard keys:** the display acts as a USB keyboard and presses a combo such as
+  `ctrl+alt+t`, `meta+l`, `f13` or a media key (`play`, `next`, `prev`, `stop`, `mute`, `volup`,
+  `voldown`).
+- **Web request:** a GET or POST to any URL, such as a Home Assistant webhook.
+- **Go to page:** switches to another page (folder-style buttons).
+
+**Editing:** tap **Edit** to see the empty slots, then tap a button or a `+` slot (or hold any
+button). The **≡ menu** adds, renames and deletes pages, exports the layout to
+`dashboard/backup/` on the SD card, and resets to the example. To load a layout written on the
+PC, copy it as `dashboard/import/dashpad.json` and restart the display (the file is deleted after
+import). [`dashpad/dashpad.json`](dashpad/dashpad.json) is the example and the built-in default:
+Terminal, Steam, Firefox, New text and Lock.
+
+**Connections** (in the ≡ menu), each switched on or off:
+
+- **PC helper** (on by default): `tools/dashpad_helper.py`, a small program on your PC that runs
+  "Run on PC" buttons over Wi-Fi.
+- **USB keyboard** (off by default): while DashPad is open, the display's USB port becomes a
+  keyboard called "DashPad". **Flashing, the log and `tools/sdcard.py` don't work until you leave
+  DashPad**, which turns the port back to normal (so does restarting the display). The bottom bar
+  shows ⌨ ✓ once your PC has set the keyboard up.
+
+#### The PC helper
+
+It only runs the commands listed in **its own** config file, `~/.config/dashpad/helper.json`
+(created from [`dashpad/helper.json`](dashpad/helper.json) on first run): the display just sends an
+action name like `terminal`. Each request is signed with a shared secret (HMAC-SHA256, with a
+timestamp and a one-time number), so other devices on your network can't trigger it and a
+recorded request can't be replayed. The secret is in `~/.config/dashpad/token` (readable only by
+you); on the display it's kept apart from settings, never logged, exported or backed up.
+
+```bash
+# Start it and leave it running (only Python's standard library is needed)
+python3 tools/dashpad_helper.py serve
+
+# Pair once: sends the PC's address and the secret over the USB cable.
+# Close DashPad first; pair again if the PC's IP address changes.
+~/.espressif/python_env/idf5.5_py3.14_env/bin/python tools/dashpad_helper.py pair
+
+python3 tools/dashpad_helper.py actions     # what each action runs on this PC
+python3 tools/dashpad_helper.py autostart   # start the helper when you log in
+python3 tools/dashpad_helper.py new-token   # new secret (then pair again)
+```
+
+- An action is a list of alternative commands; the first one installed is run, without a shell.
+  Edit `helper.json` and restart the helper to change them.
+- The display needs the correct time to sign requests (the bar says "PC: no clock yet" until then).
+- The helper listens on port 8765. Bazzite's default firewall zone already allows it; on other
+  systems you may need to open it.
+- Give your PC a fixed address (a DHCP reservation in your router), or you'll need to pair again
+  when it changes.
+
+#### Keyboard shortcuts on KDE
+
+KDE already has `ctrl+alt+t` (Konsole) and `meta+l` (lock the screen). For the example's other
+buttons, add shortcuts once in **System Settings > Keyboard > Shortcuts > Add New > Command or
+Script** (or **Application**), then click the shortcut box and tap the DashPad button to record it:
+
+| Button | Keys | Command |
+|---|---|---|
+| Steam | `ctrl+alt+shift+s` | `steam` |
+| Firefox | `ctrl+alt+shift+f` | `flatpak run org.mozilla.firefox` |
+| New text | `ctrl+alt+shift+n` | `kwrite` |
+
+Avoid F13-F24: Linux gives them special meanings (F13 opens KDE's Quick Settings, F20 mutes the
+microphone).
+
 ### Custom Apps (from the SD card)
 
 | | |
@@ -483,6 +557,9 @@ In one place, what's private and how it's protected:
 - **The Jellyfin key** lives in its own storage area, not in backups or the log, and is never
   shown on screen (only its last 4 characters). With an `http://` server it crosses your network
   unencrypted.
+- **DashPad's PC helper** only runs commands from its own config file and only accepts requests
+  signed with the paired secret. Treat exported DashPad layouts as private if they contain webhook
+  URLs, which often work as passwords.
 - **Apps from the SD card** have full access to the display, so they only run when signed by a
   trusted key (built in from `keys/`, or added after an on-screen warning and confirmation) or,
   in developer mode, after you approve each file. The private signing key (`local-keys/`) is
@@ -530,6 +607,8 @@ test/host/json_skip/run.sh
 | `main/clock_tools.c`, `main/app_timers.c` | Timers, stopwatch, alarms and their alerts; the Timers app |
 | `main/jellyfin.c`, `main/app_jellyfin.c` | Jellyfin client (server settings, polling, cover art, remote control) and the app |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
+| `main/dashpad.c`, `main/app_dashpad.c`, `main/usb_kbd.c` | DashPad: layout, actions and pairing; the app; the USB keyboard |
+| `dashpad/`, `tools/dashpad_helper.py` | DashPad example layout and helper config; the PC helper |
 | `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
 | `main/ext_apps.c`, `main/app_keys.c`, `main/app_symbols.c` | SD card apps: loading, signature checks / trusted keys / developer mode, and what apps may call |
 | `sdk/`, `apps/`, `keys/` | App SDK (header and build settings), example apps, the built-in public signing key |
@@ -546,6 +625,8 @@ test/host/json_skip/run.sh
 - [LVGL](https://lvgl.io/) 8.4 (MIT licence).
 - Espressif's [elf_loader](https://components.espressif.com/components/espressif/elf_loader) 1.3.5
   and cmake_utilities (Apache 2.0), in `components/`.
+- [TinyUSB](https://github.com/hathach/tinyusb) (MIT) and Espressif's esp_tinyusb (Apache 2.0) for
+  DashPad's USB keyboard, in `components/` (examples and board files removed).
 - Weather data: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).
 - Stock prices: Yahoo Finance; earnings dates: Nasdaq. For personal use; data is delayed and not
   investment advice.

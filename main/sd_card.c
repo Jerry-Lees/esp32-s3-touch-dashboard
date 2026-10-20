@@ -27,6 +27,7 @@
 
 #include "net_time.h"
 #include "app_keys.h"
+#include "dashpad.h"
 #include "ext_apps.h"
 #include "sd_card.h"
 #include "settings_backup.h"
@@ -109,7 +110,8 @@ static const char README_TXT[] =
     "              then erased. wifi.json (Wi-Fi networks, up to 10) is\r\n"
     "              overwritten with blanks and deleted after import, so\r\n"
     "              passwords don't stay on the card. settings*.json restores\r\n"
-    "              a settings backup.\r\n"
+    "              a settings backup. dashpad*.json replaces the DashPad\r\n"
+    "              layout.\r\n"
     "pictures/     Pictures for the Photos app and the photo screensaver:\r\n"
     "              JPEG, PNG, GIF or BMP (folders inside are included).\r\n"
     "screenshots/  Screenshots: long-press the top bar on any screen.\r\n"
@@ -338,6 +340,7 @@ static void mount_task(void *arg)
         make_folders();
         import_wifi();
         app_keys_import_dir(SD_DIR "/import");   /* asked on screen, see launcher.c */
+        dashpad_import_dir(SD_DIR "/import");
         ext_apps_rescan();
         if (settings_backup_import(sd_card_notice)) {
             vTaskDelay(pdMS_TO_TICKS(4000));      /* time to read the message */

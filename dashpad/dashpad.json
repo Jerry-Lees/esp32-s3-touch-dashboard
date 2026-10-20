@@ -1,0 +1,61 @@
+{
+  "format": "dashpad",
+  "version": 1,
+  "pages": [
+    {
+      "name": "Desktop",
+      "buttons": [
+        {
+          "label": "Terminal",
+          "symbol": "keyboard",
+          "color": "#37474F",
+          "action": {
+            "type": "pc",
+            "name": "terminal",
+            "keys": "ctrl+alt+t"
+          }
+        },
+        {
+          "label": "Steam",
+          "symbol": "play",
+          "color": "#1E3A5F",
+          "action": {
+            "type": "pc",
+            "name": "steam",
+            "keys": "ctrl+alt+shift+s"
+          }
+        },
+        {
+          "label": "Firefox",
+          "symbol": "gps",
+          "color": "#E66000",
+          "action": {
+            "type": "pc",
+            "name": "firefox",
+            "keys": "ctrl+alt+shift+f"
+          }
+        },
+        {
+          "label": "New text",
+          "symbol": "file",
+          "color": "#5C6BC0",
+          "action": {
+            "type": "pc",
+            "name": "text",
+            "keys": "ctrl+alt+shift+n"
+          }
+        },
+        {
+          "label": "Lock",
+          "symbol": "eye_close",
+          "color": "#B71C1C",
+          "action": {
+            "type": "pc",
+            "name": "lock",
+            "keys": "meta+l"
+          }
+        }
+      ]
+    }
+  ]
+}

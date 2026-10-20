@@ -23,6 +23,18 @@ dependencies:
       path: /var/home/dad/esp/my_display/components/espressif__esp_lcd_touch_gt911
       type: local
     version: 1.1.1~1
+  espressif/esp_tinyusb:
+    dependencies: []
+    source:
+      path: /var/home/dad/esp/my_display/components/espressif__esp_tinyusb
+      type: local
+    version: 1.7.6~2
+  espressif/tinyusb:
+    dependencies: []
+    source:
+      path: /var/home/dad/esp/my_display/components/espressif__tinyusb
+      type: local
+    version: 0.21.0~2
   idf:
     source:
       type: idf
@@ -38,8 +50,10 @@ direct_dependencies:
 - espressif/elf_loader
 - espressif/esp_lcd_touch
 - espressif/esp_lcd_touch_gt911
+- espressif/esp_tinyusb
+- espressif/tinyusb
 - idf
 - lvgl/lvgl
-manifest_hash: e9cb036a3ffd89fddbfcea905acbe36a5a9f364a1dd339b978c9fb2523081a78
+manifest_hash: e5d9bbc3e20aa0698cbadae7c02288ddfeffe37b8f131b1c9146d4e16fb69ddd
 target: esp32s3
 version: 2.0.0
