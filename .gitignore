@@ -1,4 +1,5 @@
 build/
 managed_components/
 main/wifi_secrets.h
+main/jellyfin_secrets.h
 __pycache__/

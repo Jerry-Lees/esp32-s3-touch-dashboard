@@ -144,6 +144,62 @@ top of the card.
 - Safety: the dashboard's own folders can't be renamed or deleted, and files named `wifi*.json`
   (which may hold Wi-Fi passwords) are never shown.
 
+### Jellyfin
+
+Shows what's playing on your [Jellyfin](https://jellyfin.org) media server: cover art, title,
+artist and album (or series, season and episode), who is watching on which device, and a
+progress bar.
+
+| | |
+|---|---|
+| ![Jellyfin, web player](docs/screenshots/jellyfin.png) | ![Jellyfin, Roku app](docs/screenshots/jellyfin_roku.png) |
+
+*In these screenshots the cover art (copyrighted posters) and the user/device line are blurred
+for this documentation only. On the display, the cover art and the user and device names show
+normally.*
+
+- **Previous / play-pause / next / stop** control the player remotely, and dragging the progress
+  bar jumps to that point (left: the web player, paused).
+- **Some apps, like the Jellyfin Roku app, don't support remote control.** For those the buttons
+  are hidden and a note says so (right); you can still see what's playing and how far along it
+  is. This is a limit of the player app: Jellyfin's own dashboard can't control them either.
+- When several devices are playing, **< 1 of 2 >** arrows switch between them.
+- The app asks the server every 2 seconds, only while it's open.
+
+#### Setting up Jellyfin
+
+The app needs your server's address and an **API key**. To make a key, open Jellyfin in a browser
+and go to **Dashboard > API Keys** (under Advanced), click **+** and give it a name such as
+`Dashboard`. A Jellyfin key is 32 characters of `0-9` and `a-f`. (Jellyseerr/Overseerr keys look
+different and won't work.)
+
+There are two ways to give them to the display:
+
+- **On the display:** open the app, tap the gear (top right) and type the address and key.
+- **In a settings file, before building** (easier than typing a 32-character key): create
+  `main/jellyfin_secrets.h`:
+  ```c
+  #pragma once
+  #define JELLYFIN_URL     "http://192.168.1.20:8096"
+  #define JELLYFIN_API_KEY "0123456789abcdef0123456789abcdef"
+  ```
+  Use your server's address (with `http://` or `https://` and the port, usually 8096) and your
+  key, then build and flash. The display copies them into its own storage at start-up, and again
+  whenever you change the file and flash again. Without the file, the app just asks you to set it
+  up.
+
+How the key is kept safe:
+
+- `main/jellyfin_secrets.h` is in `.gitignore`, so it's never committed. Like the Wi-Fi password
+  in `wifi_secrets.h`, it does end up inside the firmware you flash, so don't share firmware
+  files.
+- On the display, the address and key live in their own storage area, **not** in settings
+  backups, and are never written to the log. The setup page never shows the saved key.
+- **Forget** on the setup page (tap twice) erases them. They stay forgotten until you change
+  `jellyfin_secrets.h` and flash again.
+- With an `http://` address the key travels unencrypted over your home network on each request.
+  That's normal for a Jellyfin server on a LAN; use `https://` if your server has it.
+
 ### Games
 
 ![Games folder](docs/screenshots/games.png)
@@ -188,6 +244,8 @@ LVGL 8.4 and the touch drivers are included in `components/`.
    #define WIFI_SSID     "your network name"
    #define WIFI_PASSWORD "your password"
    ```
+   *Optional:* `main/jellyfin_secrets.h` with your Jellyfin server and API key (also in
+   `.gitignore`; see [Setting up Jellyfin](#setting-up-jellyfin)).
 3. Build and flash (board connected over USB-C):
    ```bash
    . ~/esp/esp-idf/export.sh
@@ -378,6 +436,7 @@ $PY tools/sdcard.py mkdir pictures/holiday
 | `main/photo_frame.c`, `main/pic_decode.c` | Slideshow engine (Photos app and screensaver); JPEG/BMP and PNG/GIF decoding |
 | `main/app_files.c` | File manager |
 | `main/clock_tools.c`, `main/app_timers.c` | Timers, stopwatch, alarms and their alerts; the Timers app |
+| `main/jellyfin.c`, `main/app_jellyfin.c` | Jellyfin client (server settings, polling, cover art, remote control) and the app |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
 | `tools/` | Image generators, the screenshot receiver and the USB file tool |

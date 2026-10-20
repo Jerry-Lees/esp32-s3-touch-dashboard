@@ -51,3 +51,7 @@ bool photo_is_picture(const char *name);
  * scaled to fit (or fill), rotated per EXIF. Slow: never in the LVGL task.
  * On failure err (64 bytes) says why. */
 bool photo_decode_file(const char *path, uint16_t *buf, int w, int h, bool fill, char *err);
+/* Same for a picture in memory (type found from its first bytes), always
+ * fitted. The picture's size inside buf (centred) goes to out_w / out_h. */
+bool photo_decode_mem(const void *data, size_t len, uint16_t *buf, int w, int h,
+                      char *err, int *out_w, int *out_h);

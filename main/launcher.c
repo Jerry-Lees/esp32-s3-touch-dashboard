@@ -55,6 +55,7 @@ static const app_t *const s_apps[] = {
     &stonks_app,
     &photos_app,
     &files_app,
+    &jellyfin_app,
     &games_folder,
     &settings_app,
 };

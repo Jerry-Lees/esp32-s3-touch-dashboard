@@ -288,13 +288,18 @@ static inline uint16_t lerp565(uint16_t a, uint16_t b, uint16_t c, uint16_t d, i
     return r << 11 | g << 5 | bl;
 }
 
-static void render(const img_t *src, int o, uint16_t *dst, int w, int h, bool fill)
+/* Draws src into dst (w x h, black around it). The picture's size on
+ * screen goes to *out_w / *out_h (at most w x h). */
+static void render(const img_t *src, int o, uint16_t *dst, int w, int h, bool fill,
+                   int *out_w, int *out_h)
 {
     memset(dst, 0, (size_t)w * h * 2);
     bool rot = o >= 5;
     int ow = rot ? src->h : src->w, oh = rot ? src->w : src->h;
     float k = fill ? fmaxf((float)w / ow, (float)h / oh) : fminf((float)w / ow, (float)h / oh);
     int dw = (int)lroundf(ow * k), dh = (int)lroundf(oh * k);
+    *out_w = dw < w ? dw : w;
+    *out_h = dh < h ? dh : h;
     int x0 = (w - dw) / 2, y0 = (h - dh) / 2;
     int ya = y0 < 0 ? 0 : y0, yb = y0 + dh > h ? h : y0 + dh;
     int xa = x0 < 0 ? 0 : x0, xb = x0 + dw > w ? w : x0 + dw;
@@ -336,28 +341,68 @@ static int job_scale(int w, int h, const void *arg)
     return pick_scale(w, h, j->w, j->h, j->fill);
 }
 
+typedef enum { K_JPEG, K_PNG, K_GIF, K_BMP } kind_t;
+
+/* Decodes from f (closed here) and draws into buf. */
+static bool decode_stream(FILE *f, kind_t kind, uint16_t *buf, int w, int h, bool fill,
+                          char *err, int *out_w, int *out_h)
+{
+    const job_t job = { .buf = buf, .w = w, .h = h, .fill = fill }, *j = &job;
+    img_t img = {0};
+    int orient = 1;
+    bool ok;
+    switch (kind) {
+    case K_BMP: ok = load_bmp(f, &img, j->w, j->h, j->fill, err); break;
+    case K_PNG: ok = pic_load_png(f, &img, job_scale, j, err); break;
+    case K_GIF: ok = pic_load_gif(f, &img, job_scale, j, err); break;
+    default:    ok = load_jpeg(f, &img, &orient, j->w, j->h, j->fill, err); break;
+    }
+    fclose(f);
+    int dw, dh;
+    if (ok) render(&img, orient, j->buf, j->w, j->h, j->fill, &dw, &dh);
+    if (ok && out_w) *out_w = dw;
+    if (ok && out_h) *out_h = dh;
+    free(img.px);
+    return ok;
+}
+
 bool photo_decode_file(const char *path, uint16_t *buf, int w, int h, bool fill, char *err)
 {
     err[0] = 0;
-    const job_t job = { .buf = buf, .w = w, .h = h, .fill = fill }, *j = &job;
     FILE *f = fopen(path, "rb");
     if (!f) {
         strcpy(err, "couldn't open the file");
         return false;
     }
     setvbuf(f, NULL, _IOFBF, 16384);
-    img_t img = {0};
-    int orient = 1;
     const char *dot = strrchr(path, '.');
-    bool ok;
-    if (dot && !strcasecmp(dot, ".bmp"))      ok = load_bmp(f, &img, j->w, j->h, j->fill, err);
-    else if (dot && !strcasecmp(dot, ".png")) ok = pic_load_png(f, &img, job_scale, j, err);
-    else if (dot && !strcasecmp(dot, ".gif")) ok = pic_load_gif(f, &img, job_scale, j, err);
-    else                                      ok = load_jpeg(f, &img, &orient, j->w, j->h, j->fill, err);
-    fclose(f);
-    if (ok) render(&img, orient, j->buf, j->w, j->h, j->fill);
-    free(img.px);
-    return ok;
+    kind_t kind = K_JPEG;
+    if (dot && !strcasecmp(dot, ".bmp"))      kind = K_BMP;
+    else if (dot && !strcasecmp(dot, ".png")) kind = K_PNG;
+    else if (dot && !strcasecmp(dot, ".gif")) kind = K_GIF;
+    return decode_stream(f, kind, buf, w, h, fill, err, NULL, NULL);
+}
+
+bool photo_decode_mem(const void *data, size_t len, uint16_t *buf, int w, int h,
+                      char *err, int *out_w, int *out_h)
+{
+    err[0] = 0;
+    const uint8_t *d = data;
+    kind_t kind;
+    if (len >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF)  kind = K_JPEG;
+    else if (len >= 8 && !memcmp(d, "\x89PNG\r\n\x1a\n", 8))    kind = K_PNG;
+    else if (len >= 6 && !memcmp(d, "GIF8", 4))                     kind = K_GIF;
+    else if (len >= 2 && d[0] == 'B' && d[1] == 'M')                kind = K_BMP;
+    else {
+        strcpy(err, "not a JPEG, PNG, GIF or BMP picture");
+        return false;
+    }
+    FILE *f = fmemopen((void *)data, len, "rb");
+    if (!f) {
+        strcpy(err, "out of memory");
+        return false;
+    }
+    return decode_stream(f, kind, buf, w, h, false, err, out_w, out_h);
 }
 
 static void worker(void *arg)
