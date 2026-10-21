@@ -204,7 +204,14 @@ How the key is kept safe:
 ### DashPad
 
 A macro pad: pages of big buttons (5 x 3 per page, up to 8 pages) that do things on your PC or
-your network. Each button has a label, a symbol and a colour, and one action:
+your network.
+
+| | |
+|---|---|
+| ![DashPad](docs/screenshots/dashpad.png) | ![DashPad, edit mode](docs/screenshots/dashpad_edit.png) |
+| ![DashPad, editing a button](docs/screenshots/dashpad_button.png) | ![DashPad menu and connections](docs/screenshots/dashpad_menu.png) |
+
+Each button has a label, a symbol and a colour, and one action:
 
 - **Run on PC:** asks the PC helper (below) to run a named action, such as opening a terminal.
   It can also have **keys** to send instead when the helper is off or can't be reached.
