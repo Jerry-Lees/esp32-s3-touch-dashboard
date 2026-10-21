@@ -19,7 +19,7 @@
 #define SPEED      110         /* px per second */
 #define GAP        44          /* between an item and a separator */
 #define MAX_LABELS 16
-#define MAX_ITEMS  (8 + 20)    /* weather cities + stocks */
+#define MAX_ITEMS  (8 + 20 + 1)    /* weather cities + stocks + servers */
 
 #define C_BAR      0x0B0F13
 #define C_EDGE     0x2A333C
@@ -51,6 +51,7 @@ static int collect_items(void)
     if (settings_get_ticker_stocks()) {
         n += stonks_ticker_items(T.items + n, MAX_ITEMS - n);
     }
+    n += monitor_ticker_items(T.items + n, MAX_ITEMS - n);
     return n;
 }
 

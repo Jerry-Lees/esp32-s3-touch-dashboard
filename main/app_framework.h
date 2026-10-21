@@ -52,6 +52,7 @@ extern const app_t files_app;
 extern const app_t timers_app;
 extern const app_t jellyfin_app;
 extern const app_t dashpad_app;
+extern const app_t monitor_app;
 extern const app_t settings_app;
 
 /* Weather locations, so Settings can offer a default-city choice. */
@@ -68,6 +69,8 @@ int  weather_ticker_items(char (*out)[TICKER_ITEM_LEN], int max);
 void weather_background_tick(void);
 int  stonks_ticker_items(char (*out)[TICKER_ITEM_LEN], int max);
 void stonks_background_tick(void);
+/* The server monitor's item (monitor.c; its own option, not in Settings). */
+int  monitor_ticker_items(char (*out)[TICKER_ITEM_LEN], int max);
 
 /* ---- Shared fonts ----
  * Uses the biggest Montserrat sizes enabled in menuconfig, falling back

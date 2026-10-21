@@ -1,0 +1,76 @@
+{
+ "format": "dashboard-monitor",
+ "version": 1,
+ "interval": 60,
+ "groups": [
+  {
+   "name": "Network",
+   "hosts": [
+    {
+     "name": "router",
+     "host": "192.168.1.1",
+     "what": "Home router",
+     "checks": [
+      "ping",
+      "http http://192.168.1.1/ Web"
+     ]
+    },
+    {
+     "name": "pihole",
+     "host": "pihole.home.lan",
+     "what": "Pi-hole DNS + ad blocker",
+     "checks": [
+      "ping",
+      "tcp 53 DNS",
+      "http http://pihole.home.lan/admin/ Web"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Servers",
+   "hosts": [
+    {
+     "name": "proxmox",
+     "host": "proxmox.home.lan",
+     "what": "Proxmox VE host",
+     "checks": [
+      "ping",
+      "tcp 8006 Web UI"
+     ]
+    },
+    {
+     "name": "nas",
+     "host": "nas.home.lan",
+     "what": "NAS",
+     "checks": [
+      "ping",
+      "tcp 445 Shares",
+      "tcp 22 SSH"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Media",
+   "hosts": [
+    {
+     "name": "jellyfin",
+     "host": "media.home.lan",
+     "what": "Jellyfin media server",
+     "checks": [
+      "http http://media.home.lan:8096/health Jellyfin"
+     ]
+    },
+    {
+     "name": "website",
+     "host": "example.com",
+     "what": "A public website over HTTPS",
+     "checks": [
+      "http https://example.com/ Site"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -17,6 +17,7 @@
 #include "launcher.h"
 #include "clock_tools.h"
 #include "dashpad.h"
+#include "monitor.h"
 #include "net_time.h"
 #include "photo_frame.h"
 #include "settings.h"
@@ -81,6 +82,7 @@ static const app_t *const s_apps[] = {
     &files_app,
     &jellyfin_app,
     &dashpad_app,
+    &monitor_app,
     &games_folder,
     &settings_app,
 };
@@ -1065,6 +1067,9 @@ static void notice_tick(lv_timer_t *t)
         /* Problems stay up longer so there's time to read them. */
         launcher_toast(msg, strstr(msg, "not imported") ? 15000 : 6000);
     }
+    else if (monitor_take_alert(msg, sizeof(msg))) {
+        launcher_toast(msg, 8000);
+    }
     if (ext_apps_poll()) s_home_dirty = true;
     trust_prompt();
 }
@@ -1084,6 +1089,7 @@ void launcher_start(void)
     app_keys_init();
     ext_apps_init();
     dashpad_init();
+    monitor_init();
     wifi_list_init();
     net_time_start();
     build_home();

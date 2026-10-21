@@ -121,6 +121,8 @@ static const char README_TXT[] =
     "apps/         Apps (.app files). They run only if signed by a trusted key\r\n"
     "              (Settings > Apps). A .pub key file in import/ is offered\r\n"
     "              for trust on screen at the next start.\r\n"
+    "monitors.json The Servers app's list of servers to check (see the\r\n"
+    "              README). Re-read automatically when it changes.\r\n"
     "\r\n"
     "Files can be copied to and from these folders over the USB cable,\r\n"
     "without taking the card out: tools/sdcard.py in the project.\r\n";

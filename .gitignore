@@ -6,3 +6,4 @@ __pycache__/
 local-keys/
 apps/*/dependencies.lock
 apps/*/managed_components/
+monitor/monitors.json

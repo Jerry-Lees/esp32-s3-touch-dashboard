@@ -282,6 +282,62 @@ Script** (or **Application**), then click the shortcut box and tap the DashPad b
 Avoid F13-F24: Linux gives them special meanings (F13 opens KDE's Quick Settings, F20 mutes the
 microphone).
 
+### Servers
+
+Watches the machines on your network: ping, TCP ports and web pages, every minute.
+
+| | | |
+|---|---|---|
+| ![Servers](docs/screenshots/servers.png) | ![A server's checks](docs/screenshots/servers_detail.png) | ![Servers menu](docs/screenshots/servers_menu.png) |
+
+- One card per server: green when all its checks pass, amber when some fail, red when all fail,
+  grey until it's been checked. Problems are listed first (switch it off in the menu).
+- Tabs for each group in the list. **Check** runs the checks at once.
+- Tap a card for each check: what it tests, up or down, the answer time or why it failed, and
+  since when.
+- A check only counts as down after **two failures in a row**, so a single lost packet doesn't
+  turn a card red. Ping tries twice (a sleeping Wi-Fi device can miss the first one).
+- Optional, in the menu: an item in the home screen's info ticker ("all 44 up" or which ones are
+  down), and a pop-up when a server goes down or comes back.
+- Checks keep running while the app is closed (for the ticker and the pop-ups).
+
+**The list** is a JSON file on the SD card, `dashboard/monitors.json`. It's re-read whenever it
+changes, so editing it on the PC and copying it over is enough:
+
+```bash
+~/.espressif/python_env/idf5.5_py3.14_env/bin/python tools/sdcard.py put --force my-servers.json monitors.json
+```
+
+[`monitor/monitors.example.json`](monitor/monitors.example.json) shows the format:
+
+```json
+{
+ "format": "dashboard-monitor", "version": 1, "interval": 60,
+ "groups": [
+  {"name": "Servers", "hosts": [
+   {"name": "proxmox", "host": "proxmox.home.lan", "what": "Proxmox VE host",
+    "checks": ["ping", "tcp 8006 Web UI"]},
+   {"name": "jellyfin", "host": "media.home.lan", "what": "Jellyfin media server",
+    "checks": ["http http://media.home.lan:8096/health Jellyfin"]}
+  ]}
+ ]
+}
+```
+
+- `host`: a name the display can look up in DNS (use the full name, e.g. `nas.home.lan`; the
+  display has no search domain) or an IP address. `what` is a short description for the card.
+- `checks` (up to 4 per host; just `ping` if left out):
+  - `ping`: ICMP echo.
+  - `tcp <port> [label]`: the port accepts a connection (SSH, databases, web UIs with
+    self-signed HTTPS certificates, ...).
+  - `http <url> [label]`: the page answers with any status below 500 (so a login page or a
+    redirect counts as up). `https://` needs a certificate from a public authority; for
+    self-signed ones use `tcp 443`.
+- `interval`: seconds between rounds (15-3600, default 60). Up to 12 groups and 96 hosts.
+- The list stays on the card and is never built into the firmware or sent anywhere. In this
+  project, `monitor/monitors.json` is git-ignored, so a real list can be kept next to the example
+  without being committed.
+
 ### Custom Apps (from the SD card)
 
 | | |
@@ -615,6 +671,8 @@ test/host/json_skip/run.sh
 | `main/jellyfin.c`, `main/app_jellyfin.c` | Jellyfin client (server settings, polling, cover art, remote control) and the app |
 | `main/waveshare_rgb_lcd_port.c`, `main/lvgl_port.c` | Display, touch and LVGL setup, from Waveshare's demo |
 | `main/dashpad.c`, `main/app_dashpad.c`, `main/usb_kbd.c` | DashPad: layout, actions and pairing; the app; the USB keyboard |
+| `main/monitor.c`, `main/app_monitor.c` | Servers: the checks (ping, TCP, HTTP) and the app |
+| `monitor/` | Example server list (`monitors.json` here is git-ignored, for your own) |
 | `dashpad/`, `tools/dashpad_helper.py` | DashPad example layout and helper config; the PC helper |
 | `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
 | `main/ext_apps.c`, `main/app_keys.c`, `main/app_symbols.c` | SD card apps: loading, signature checks / trusted keys / developer mode, and what apps may call |
