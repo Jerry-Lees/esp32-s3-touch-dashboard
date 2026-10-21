@@ -115,3 +115,47 @@ menu "Example Configuration"
                 Height of LVGL buffer. The width of the buffer is the same as that of the LCD.
     endmenu
 endmenu
+
+menu "Dashboard apps"
+    comment "Built-in apps to include. Settings, Custom Apps (SD card apps) and the photo screensaver are always included."
+
+    config DASH_APP_WORLD_CLOCK
+        bool "World Clock"
+        default y
+
+    config DASH_APP_TIMERS
+        bool "Timers (timers, stopwatch, alarms)"
+        default y
+        help
+            The alarm engine is always included; this is the app to set them.
+
+    config DASH_APP_WEATHER
+        bool "Weather (Open-Meteo), with its ticker item and Settings tab"
+        default y
+
+    config DASH_APP_STONKS
+        bool "St0nks stock watchlist, with its ticker item and Settings tab"
+        default y
+
+    config DASH_APP_PHOTOS
+        bool "Photos slideshow app"
+        default y
+        help
+            The photo screensaver works without it.
+
+    config DASH_APP_FILES
+        bool "Files (file manager)"
+        default y
+
+    config DASH_APP_JELLYFIN
+        bool "Jellyfin now playing"
+        default y
+
+    config DASH_APP_DASHPAD
+        bool "DashPad macro pad (PC helper, web requests, USB keyboard)"
+        default y
+
+    config DASH_APP_SERVERS
+        bool "Servers (network/server monitor)"
+        default y
+endmenu

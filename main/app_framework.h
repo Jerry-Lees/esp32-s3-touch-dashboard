@@ -18,7 +18,8 @@
  *
  * Folders: an app_t with `folder` set (a NULL-terminated list of apps) is
  * a folder tile; tapping it opens a grid of those apps. Folders are defined
- * in launcher.c next to s_apps[] (e.g. "Games").
+ * in launcher.c next to s_apps[]. The games are SD card apps (apps/ in the
+ * project) that ask for the "Games" folder.
  */
 #include "lvgl.h"
 
@@ -31,6 +32,8 @@ typedef struct app_s {
     /* Optional: draws a custom tile icon into a size x size box instead of
      * using `symbol`. */
     void (*draw_icon)(lv_obj_t *holder, int size);
+    /* Optional: a picture for the tile instead of `symbol` (SD card apps). */
+    const lv_img_dsc_t *icon_img;
     /* true = start this tile at the end (until the user moves it). */
     bool pin_last;
     /* Non-NULL = this tile is a folder of these apps (NULL-terminated);
@@ -41,11 +44,6 @@ typedef struct app_s {
 /* ---- Registered apps ---- */
 extern const app_t world_clock_app;
 extern const app_t weather_app;
-extern const app_t chess_app;
-extern const app_t checkers_app;
-extern const app_t flappy_app;
-extern const app_t snake_app;
-extern const app_t g2048_app;
 extern const app_t stonks_app;
 extern const app_t photos_app;
 extern const app_t files_app;
@@ -72,42 +70,5 @@ void stonks_background_tick(void);
 /* The server monitor's item (monitor.c; its own option, not in Settings). */
 int  monitor_ticker_items(char (*out)[TICKER_ITEM_LEN], int max);
 
-/* ---- Shared fonts ----
- * Uses the biggest Montserrat sizes enabled in menuconfig, falling back
- * to smaller ones (or the default font) so the code always compiles.
- */
-#if LV_FONT_MONTSERRAT_48
-#define APP_FONT_HUGE (&lv_font_montserrat_48)
-#elif LV_FONT_MONTSERRAT_36
-#define APP_FONT_HUGE (&lv_font_montserrat_36)
-#elif LV_FONT_MONTSERRAT_28
-#define APP_FONT_HUGE (&lv_font_montserrat_28)
-#else
-#define APP_FONT_HUGE LV_FONT_DEFAULT
-#endif
-
-#if LV_FONT_MONTSERRAT_28
-#define APP_FONT_LARGE (&lv_font_montserrat_28)
-#elif LV_FONT_MONTSERRAT_24
-#define APP_FONT_LARGE (&lv_font_montserrat_24)
-#elif LV_FONT_MONTSERRAT_20
-#define APP_FONT_LARGE (&lv_font_montserrat_20)
-#else
-#define APP_FONT_LARGE LV_FONT_DEFAULT
-#endif
-
-#if LV_FONT_MONTSERRAT_20
-#define APP_FONT_MEDIUM (&lv_font_montserrat_20)
-#elif LV_FONT_MONTSERRAT_18
-#define APP_FONT_MEDIUM (&lv_font_montserrat_18)
-#elif LV_FONT_MONTSERRAT_16
-#define APP_FONT_MEDIUM (&lv_font_montserrat_16)
-#else
-#define APP_FONT_MEDIUM LV_FONT_DEFAULT
-#endif
-
-/* Shared colours */
-#define APP_COLOR_BG       0x101418
-#define APP_COLOR_PANEL    0x1E252C
-#define APP_COLOR_TEXT     0xFFFFFF
-#define APP_COLOR_SUBTEXT  0x9AA5B1
+/* ---- Shared fonts and colours (also used by SD card apps) ---- */
+#include "dash_style.h"

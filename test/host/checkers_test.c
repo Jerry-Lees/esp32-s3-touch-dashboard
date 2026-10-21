@@ -1,7 +1,7 @@
 /*
- * PC-side tests for main/checkers_engine.c (not part of the firmware).
+ * PC-side tests for apps/checkers/main/checkers_engine.c (the Checkers SD card app).
  *
- *   gcc -O2 -Wall -I main -o /tmp/checkers_test test/host/checkers_test.c main/checkers_engine.c
+ *   gcc -O2 -Wall -I sdk/dashboard_sdk/include -I apps/checkers/main -o /tmp/checkers_test test/host/checkers_test.c apps/checkers/main/checkers_engine.c
  *   /tmp/checkers_test
  */
 #include <stdio.h>

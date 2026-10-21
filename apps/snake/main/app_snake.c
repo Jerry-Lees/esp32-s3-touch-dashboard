@@ -5,15 +5,17 @@
  * checkerboard, the snake and the apple. Each step only invalidates the few
  * cells that changed, so redrawing stays cheap. One lv_timer moves the
  * snake; its period shrinks as the score rises (the snake speeds up).
- * The best score is saved in NVS.
+ * The best score is saved with dash_set_int.
+ *
+ * An SD card app: tools/build_app.sh apps/snake
  */
 #include <stdio.h>
 #include <string.h>
 
 #include "lvgl.h"
-#include "app_framework.h"
+#include "dash_style.h"
+#include "dashboard_app.h"
 #include "game_common.h"
-#include "settings.h"
 
 #define COLS     27
 #define ROWS     13
@@ -212,7 +214,7 @@ static void game_over(void)
     S.state = ST_OVER;
     if (S.score > S.best) {
         S.best = S.score;
-        settings_set_i32("snake_best", S.best);
+        dash_set_int("snake_best", S.best);
         update_labels();
     }
     lv_label_set_text_fmt(S.panel_text, "%s\nScore: %d\nBest: %d\n\nTap to play again",
@@ -317,7 +319,7 @@ static lv_obj_t *hud_label(lv_obj_t *parent, lv_align_t align, int x)
 static void snake_create(lv_obj_t *parent)
 {
     memset(&S, 0, sizeof(S));
-    S.best = settings_get_i32("snake_best", 0);
+    S.best = dash_get_int("snake_best", 0);
 
     lv_obj_set_style_bg_color(parent, lv_color_hex(C_BG), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
@@ -373,36 +375,13 @@ static void snake_destroy(void)
     memset(&S, 0, sizeof(S));
 }
 
-static void snake_tile_icon(lv_obj_t *holder, int size)
+int app_main(int argc, char *argv[])
 {
-    /* An L-shaped snake and an apple. */
-    static const int8_t pts[][2] = { {0, 3}, {1, 3}, {2, 3}, {2, 2}, {2, 1}, {3, 1} };
-    int u = size / 4;
-    for (size_t i = 0; i < sizeof(pts) / sizeof(pts[0]); i++) {
-        lv_obj_t *o = lv_obj_create(holder);
-        lv_obj_remove_style_all(o);
-        lv_obj_set_size(o, u, u);
-        lv_obj_set_pos(o, pts[i][0] * u, pts[i][1] * u - u / 2);
-        lv_obj_set_style_radius(o, 4, 0);
-        lv_obj_set_style_bg_color(o, lv_color_hex(i == 5 ? 0xFFFFFF : 0xE8F5E9), 0);
-        lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    }
-    lv_obj_t *a = lv_obj_create(holder);
-    lv_obj_remove_style_all(a);
-    lv_obj_set_size(a, u - 2, u - 2);
-    lv_obj_set_pos(a, 3 * u + 1, 3 * u - u / 2 + 1);
-    lv_obj_set_style_radius(a, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(a, lv_color_hex(C_APPLE), 0);
-    lv_obj_set_style_bg_opa(a, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(a, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    (void)argc;
+    (void)argv;
+    static const dash_app_def_t def = {
+        .api_version = DASH_API_VERSION, .create = snake_create, .destroy = snake_destroy,
+    };
+    dash_app_register(&def);
+    return 0;
 }
-
-const app_t snake_app = {
-    .name      = "Snake",
-    .symbol    = LV_SYMBOL_SHUFFLE,
-    .color_hex = 0x43A047,
-    .create    = snake_create,
-    .destroy   = snake_destroy,
-    .draw_icon = snake_tile_icon,
-};

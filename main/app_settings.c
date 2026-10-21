@@ -354,6 +354,7 @@ static void ticker_changed(lv_event_t *e)
     launcher_apply_ticker();
 }
 
+#if CONFIG_DASH_APP_WEATHER
 static void ticker_wx_changed(lv_event_t *e)
 {
     settings_set_ticker_weather(is_checked(e));
@@ -370,11 +371,14 @@ static void ticker_cities_changed(lv_event_t *e)
     }
     settings_set_ticker_cities(mask);
 }
+#endif
 
+#if CONFIG_DASH_APP_STONKS
 static void ticker_stocks_changed(lv_event_t *e)
 {
     settings_set_ticker_stocks(is_checked(e));
 }
+#endif
 
 static void clock_changed(lv_event_t *e)
 {
@@ -385,6 +389,7 @@ static void clock_changed(lv_event_t *e)
     }
 }
 
+#if CONFIG_DASH_APP_WEATHER
 static void city_changed(lv_event_t *e)
 {
     uint16_t id = lv_btnmatrix_get_selected_btn(lv_event_get_target(e));
@@ -392,6 +397,7 @@ static void city_changed(lv_event_t *e)
         settings_set_weather_city(id);
     }
 }
+#endif
 
 /* ---------- tabs ---------- */
 
@@ -898,6 +904,7 @@ static void build_time_tab(lv_obj_t *tab)
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 }
 
+#if CONFIG_DASH_APP_WEATHER
 static void build_weather_tab(lv_obj_t *tab)
 {
     int n = weather_location_count();
@@ -937,7 +944,9 @@ static void build_weather_tab(lv_obj_t *tab)
                 "and tomorrow. "
                 "Turn the ticker itself on in the Display tab.");
 }
+#endif
 
+#if CONFIG_DASH_APP_STONKS
 static void build_stonks_tab(lv_obj_t *tab)
 {
     lv_obj_t *p = mk_panel(tab);
@@ -946,6 +955,7 @@ static void build_stonks_tab(lv_obj_t *tab)
     mk_note(p, "Each symbol's price and today's change. Add or remove symbols in "
                "the St0nks app. Turn the ticker itself on in the Display tab.");
 }
+#endif
 
 /* ---------- Apps: SD card apps, trusted keys, developer mode ---------- */
 
@@ -1207,8 +1217,12 @@ static void settings_create(lv_obj_t *parent)
     build_network_tab(mk_tab(tv, "Network"));
     build_display_tab(mk_tab(tv, "Display"));
     build_time_tab(mk_tab(tv, "Time"));
+#if CONFIG_DASH_APP_WEATHER
     build_weather_tab(mk_tab(tv, "Weather"));
+#endif
+#if CONFIG_DASH_APP_STONKS
     build_stonks_tab(mk_tab(tv, "St0nks"));
+#endif
     build_apps_tab(mk_tab(tv, "Apps"));
     build_about_tab(mk_tab(tv, "About"));
 

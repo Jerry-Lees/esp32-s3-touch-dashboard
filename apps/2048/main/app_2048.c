@@ -1,21 +1,23 @@
 /*
  * 2048: swipe to slide all tiles; two equal tiles that collide merge.
  *
- * The game itself is the `M` struct (plain numbers, kept while the app is
- * closed, so leaving and coming back resumes the game). The UI is one
+ * The game itself is the `M` struct (plain numbers in a dash_keep block,
+ * kept while the app is closed, so leaving and coming back resumes the game). The UI is one
  * LVGL object per tile. A move updates `M` at once, slides the tile
  * objects with lv_anim, and a short one-shot timer then removes the merged
  * tiles, "pops" the new values and shows the newly spawned tile.
- * The best score is saved in NVS.
+ * The best score is saved with dash_set_int.
+ *
+ * An SD card app: tools/build_app.sh apps/2048
  */
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "lvgl.h"
-#include "app_framework.h"
+#include "dash_style.h"
+#include "dashboard_app.h"
 #include "game_common.h"
-#include "settings.h"
 
 #define N        4
 #define CELL     86
@@ -33,12 +35,14 @@
 #define C_EMPTY  0xCDC1B4
 #define C_TEXT   0x776E65
 
-/* The game (survives closing the app). */
-static struct {
+/* The game (a dash_keep block, so it survives closing the app). */
+typedef struct {
     uint32_t v[N * N];            /* 0 = empty; row 0 is the top */
     int      score, best;
     bool     started, won;        /* won = reached 2048 (asked once) */
-} M;
+} game_t;
+static game_t *s_game;
+#define M (*s_game)
 
 /* The UI (only while the app is open). */
 static struct {
@@ -203,7 +207,7 @@ static void new_game(void)
 static void save_best(void)
 {
     if (M.best > U.saved_best) {
-        settings_set_i32("2048_best", M.best);
+        dash_set_int("2048_best", M.best);
         U.saved_best = M.best;
     }
 }
@@ -373,11 +377,18 @@ static lv_obj_t *score_box(lv_obj_t *parent, const char *name, int x, int w)
 
 static void g2048_create(lv_obj_t *parent)
 {
+    s_game = dash_keep("game", sizeof(game_t));
+    if (!s_game) {
+        lv_obj_t *l = lv_label_create(parent);
+        lv_label_set_text(l, "Not enough memory for the game.");
+        lv_obj_center(l);
+        return;
+    }
     memset(&U, 0, sizeof(U));
     U.parent = parent;
     U.pending = -1;
     U.spawned = -1;
-    U.saved_best = settings_get_i32("2048_best", 0);
+    U.saved_best = dash_get_int("2048_best", 0);
     if (!M.started) {
         M.best = U.saved_best;
         new_game();
@@ -439,31 +450,17 @@ static void g2048_destroy(void)
     if (U.finish) {
         lv_timer_del(U.finish);   /* M is already up to date */
     }
-    save_best();
+    if (s_game) save_best();
     memset(&U, 0, sizeof(U));
 }
 
-static void g2048_tile_icon(lv_obj_t *holder, int size)
+int app_main(int argc, char *argv[])
 {
-    lv_obj_t *t = lv_obj_create(holder);
-    lv_obj_remove_style_all(t);
-    lv_obj_set_size(t, size, size);
-    lv_obj_set_style_radius(t, 10, 0);
-    lv_obj_set_style_bg_color(t, lv_color_hex(tile_color(2048)), 0);
-    lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(t, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *l = lv_label_create(t);
-    lv_label_set_text(l, "2048");
-    lv_obj_set_style_text_font(l, APP_FONT_MEDIUM, 0);
-    lv_obj_set_style_text_color(l, lv_color_white(), 0);
-    lv_obj_center(l);
+    (void)argc;
+    (void)argv;
+    static const dash_app_def_t def = {
+        .api_version = DASH_API_VERSION, .create = g2048_create, .destroy = g2048_destroy,
+    };
+    dash_app_register(&def);
+    return 0;
 }
-
-const app_t g2048_app = {
-    .name      = "2048",
-    .symbol    = LV_SYMBOL_GPS,
-    .color_hex = 0x8F7A66,
-    .create    = g2048_create,
-    .destroy   = g2048_destroy,
-    .draw_icon = g2048_tile_icon,
-};

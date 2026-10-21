@@ -642,8 +642,8 @@ Python with Pillow):
 ```bash
 # Chess and checkers engines (move generation must match known perft counts;
 # the checkers test plays full games, so it takes a few minutes)
-gcc -O2 -I main -o /tmp/chess_test test/host/chess_test.c main/chess_engine.c && /tmp/chess_test
-gcc -O2 -I main -o /tmp/checkers_test test/host/checkers_test.c main/checkers_engine.c && /tmp/checkers_test
+gcc -O2 -I sdk/dashboard_sdk/include -I apps/chess/main -o /tmp/chess_test test/host/chess_test.c apps/chess/main/chess_engine.c && /tmp/chess_test
+gcc -O2 -I sdk/dashboard_sdk/include -I apps/checkers/main -o /tmp/checkers_test test/host/checkers_test.c apps/checkers/main/checkers_engine.c && /tmp/checkers_test
 
 # PNG/GIF decoder: pixels checked against Pillow, plus 3000 damaged files (must not crash)
 test/host/pic_decode/run.sh
@@ -679,7 +679,7 @@ test/host/json_skip/run.sh
 | `sdk/`, `apps/`, `keys/` | App SDK (header and build settings), example apps, the built-in public signing key |
 | `tools/appkey.py`, `tools/build_app.sh` | Make signing keys; build and sign apps |
 | `tools/sdcard.py`, `tools/screenshot.py` | USB file transfer (and `shot`); screenshot receiver when there's no SD card |
-| `tools/gen_game_images.py`, `gen_stonks_icon.py`, `gen_elf_icon.py` | Generate the built-in images (`main/game_images.c`, `stonks_icon.c`, `elf_icon.c`) |
+| `tools/gen_game_images.py`, `gen_stonks_icon.py`, `gen_elf_icon.py` | Generate the built-in images (the games' pictures and icons in `apps/`, `stonks_icon.c`, `elf_icon.c`) |
 | `tools/gen_app_symbols.py` | Generates `main/app_symbols.c`, what SD card apps may call; rerun after a build when LVGL's settings change |
 | `test/host/` | Tests that run on the PC (see [Running the tests](#running-the-tests)) |
 | `CLAUDE.md` | Detailed developer notes |

@@ -37,8 +37,9 @@ void ext_apps_rescan(void);
 /* LVGL task: applies a finished scan; true if the list changed. */
 bool ext_apps_poll(void);
 
-/* LVGL task: home screen tiles (not the refused apps). */
-int ext_apps_tiles(const app_t **out, int max);
+/* LVGL task: tiles (not the refused apps): those in the Games folder, or
+ * the rest (Custom Apps). */
+int ext_apps_tiles(const app_t **out, int max, bool games);
 
 /* LVGL task: every app found, for Settings > Apps. */
 int  ext_apps_count(void);

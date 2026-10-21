@@ -342,7 +342,9 @@ static void mount_task(void *arg)
         make_folders();
         import_wifi();
         app_keys_import_dir(SD_DIR "/import");   /* asked on screen, see launcher.c */
+#if CONFIG_DASH_APP_DASHPAD
         dashpad_import_dir(SD_DIR "/import");
+#endif
         ext_apps_rescan();
         if (settings_backup_import(sd_card_notice)) {
             vTaskDelay(pdMS_TO_TICKS(4000));      /* time to read the message */

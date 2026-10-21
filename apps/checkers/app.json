@@ -1,0 +1,8 @@
+{
+  "name": "Checkers",
+  "version": "2.0",
+  "symbol": "stop",
+  "color": "0x2E7D32",
+  "folder": "Games",
+  "icon": "icon.png"
+}

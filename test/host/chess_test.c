@@ -1,7 +1,7 @@
 /*
- * PC-side tests for main/chess_engine.c (not part of the firmware).
+ * PC-side tests for apps/chess/main/chess_engine.c (the Chess SD card app).
  *
- *   gcc -O2 -Wall -I main -o /tmp/chess_test test/host/chess_test.c main/chess_engine.c
+ *   gcc -O2 -Wall -I sdk/dashboard_sdk/include -I apps/chess/main -o /tmp/chess_test test/host/chess_test.c apps/chess/main/chess_engine.c
  *   /tmp/chess_test
  *
  * Perft counts every legal move sequence to a fixed depth and compares the

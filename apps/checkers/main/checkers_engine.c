@@ -11,10 +11,6 @@
 #include "checkers_engine.h"
 #include "game_sys.h"
 
-#ifdef ESP_PLATFORM
-#include "esp_heap_caps.h"
-#endif
-
 #define CAPTURED  64      /* marks a jumped piece during a multi-jump */
 
 static const int8_t DR[4] = { 1, 1, -1, -1 };
@@ -203,8 +199,10 @@ static const level_t LEVELS[4] = {
     { 20,  0, 5000 },     /* Expert */
 };
 
+/* MAX_PLY move lists (in the app's memory, freed when it closes). */
+static ck_move_t s_arena[MAX_PLY * CK_MAX_MOVES];
+
 static struct {
-    ck_move_t     *arena;            /* MAX_PLY move lists */
     int64_t        deadline;
     volatile bool *abort;
     bool           stop;
@@ -226,7 +224,7 @@ static int negamax(const ck_pos_t *p, int depth, int alpha, int beta, int ply)
     if (p->quiet >= 80) return 0;
     if (ply >= MAX_PLY - 1) return evaluate(p);
 
-    ck_move_t *moves = S.arena + ply * CK_MAX_MOVES;
+    ck_move_t *moves = s_arena + ply * CK_MAX_MOVES;
     int n = gen(p, moves, CK_MAX_MOVES);
     if (n == 0) return -WIN + ply;                   /* no moves = lost */
     if (depth <= 0 && moves[0].ncap == 0) return evaluate(p);   /* quiet: stop here */
@@ -266,18 +264,6 @@ bool ck_search(const ck_pos_t *p, int level, volatile bool *abort, ck_move_t *ou
     if (n == 0) return false;
     *out = root[0];
     if (n == 1) return true;
-
-    if (!S.arena) {
-        size_t sz = sizeof(ck_move_t) * MAX_PLY * CK_MAX_MOVES;
-#ifdef ESP_PLATFORM
-        S.arena = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
-#endif
-        if (!S.arena) S.arena = malloc(sz);
-        if (!S.arena) {
-            *out = root[game_random() % n];
-            return true;
-        }
-    }
 
     S.abort = abort;
     S.stop = false;

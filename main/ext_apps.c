@@ -16,10 +16,12 @@
 #include "esp_elf.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 
 #include "lvgl.h"
 #include "dashboard_app.h"
 #include "ext_apps.h"
+#include "game_common.h"
 #include "launcher.h"
 #include "net_time.h"
 #include "sd_card.h"
@@ -35,6 +37,10 @@ typedef struct {
     ext_app_info_t info;
     char           symbol[8];
     uint32_t       color;
+    char           folder[16];
+    uint8_t       *icon;            /* PSRAM copy of the tile picture, or NULL */
+    uint16_t       icon_w, icon_h;
+    lv_img_dsc_t   icon_dsc;
     app_t          tile;
 } entry_t;
 
@@ -52,6 +58,8 @@ static bool                   s_loaded;
 static const dash_app_def_t  *s_def;
 static lv_timer_t            *s_unload_timer;
 static char                   s_missing[48];
+static char                   s_cur_name[APPK_NAME_MAX];  /* running app, for dash_keep */
+static uint8_t                s_cur_key[8];
 /* An unsigned app waiting for "Run it". */
 static uint8_t     *s_wait_buf;
 static appk_info_t  s_wait_info;
@@ -78,6 +86,115 @@ int64_t dash_now_ms(void)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+/* Apps' numbers live in the settings namespace (so backups include them)
+ * under "x" + key, apart from the firmware's own keys. */
+static bool app_key(const char *key, char out[16])
+{
+    size_t n = key ? strnlen(key, 15) : 0;
+    if (n < 1 || n > 14) return false;
+    for (size_t i = 0; i < n; i++) {
+        if (key[i] <= ' ' || key[i] > '~') return false;
+    }
+    out[0] = 'x';
+    memcpy(out + 1, key, n + 1);
+    return true;
+}
+
+/* NVS needs a stack in internal RAM (flash access turns PSRAM off). */
+static bool nvs_safe_here(const char *what)
+{
+    int probe = 0;
+    if (esp_ptr_external_ram(&probe)) {
+        ESP_LOGW(TAG, "%s: only from the LVGL task (create, events, timers)", what);
+        return false;
+    }
+    return true;
+}
+
+/* Where the games kept these before they moved to the SD card: read once
+ * so best scores and levels carry over. */
+static const struct { const char *key; bool u8; } LEGACY[] = {
+    { "chess_lvl", true }, { "checkers_lvl", true },
+    { "flappy_best", false }, { "snake_best", false }, { "2048_best", false },
+};
+
+int32_t dash_get_int(const char *key, int32_t def)
+{
+    char k[16];
+    if (!app_key(key, k) || !nvs_safe_here("dash_get_int")) return def;
+    int32_t v = settings_get_i32(k, INT32_MIN);
+    if (v != INT32_MIN) return v;
+    for (size_t i = 0; i < sizeof(LEGACY) / sizeof(LEGACY[0]); i++) {
+        if (strcmp(key, LEGACY[i].key)) continue;
+        if (LEGACY[i].u8) {
+            int u = settings_get_u8(key, -1);
+            return u < 0 ? def : u;
+        }
+        return settings_get_i32(key, def);
+    }
+    return def;
+}
+
+void dash_set_int(const char *key, int32_t value)
+{
+    char k[16];
+    if (app_key(key, k) && nvs_safe_here("dash_set_int")) settings_set_i32(k, value);
+}
+
+/* dash_keep blocks: owned by app (name + signer), never freed. */
+#define KEEP_MAX      32
+#define KEEP_PER_APP  8
+#define KEEP_BLOCK    (256 * 1024)
+#define KEEP_TOTAL    (1024 * 1024)
+
+typedef struct {
+    char    app[APPK_NAME_MAX];
+    uint8_t key[8];
+    char    name[24];
+    size_t  size;
+    void   *p;
+} keep_t;
+static keep_t s_keep[KEEP_MAX] EXT_RAM_BSS_ATTR;
+static size_t s_keep_total;
+
+void *dash_keep(const char *name, size_t size)
+{
+    if (!s_loaded || !name || !name[0] || strlen(name) >= sizeof(s_keep[0].name) ||
+        size == 0 || size > KEEP_BLOCK) {
+        return NULL;
+    }
+    int mine = 0;
+    keep_t *free_slot = NULL;
+    for (int i = 0; i < KEEP_MAX; i++) {
+        keep_t *k = &s_keep[i];
+        if (!k->p) {
+            if (!free_slot) free_slot = k;
+            continue;
+        }
+        if (strcmp(k->app, s_cur_name) || memcmp(k->key, s_cur_key, 8)) continue;
+        if (strcmp(k->name, name)) {
+            mine++;
+            continue;
+        }
+        if (k->size == size) return k->p;
+        /* Same name, new size (a new version of the app): start over. */
+        free(k->p);
+        s_keep_total -= k->size;
+        memset(k, 0, sizeof(*k));
+        if (!free_slot || free_slot > k) free_slot = k;
+    }
+    if (!free_slot || mine >= KEEP_PER_APP || s_keep_total + size > KEEP_TOTAL) return NULL;
+    void *p = heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) return NULL;
+    snprintf(free_slot->app, sizeof(free_slot->app), "%s", s_cur_name);
+    memcpy(free_slot->key, s_cur_key, 8);
+    snprintf(free_slot->name, sizeof(free_slot->name), "%s", name);
+    free_slot->size = size;
+    free_slot->p = p;
+    s_keep_total += size;
+    return p;
 }
 
 /* ======================= scanning ======================= */
@@ -130,6 +247,16 @@ static void scan_task(void *arg)
             continue;
         }
         e->info.status = app_keys_check(buf, len, &info, e->info.why, sizeof(e->info.why));
+        if (e->info.status != APPK_REFUSED && info.icon) {
+            size_t isz = (size_t)info.icon_w * info.icon_h * 3;
+            e->icon = heap_caps_malloc(isz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (e->icon) {
+                memcpy(e->icon, info.icon, isz);
+                e->icon_w = info.icon_w;
+                e->icon_h = info.icon_h;
+            }
+        }
+        snprintf(e->folder, sizeof(e->folder), "%s", info.folder);
         free(buf);
         snprintf(e->info.name, sizeof(e->info.name), "%s", info.name);
         snprintf(e->info.version, sizeof(e->info.version), "%s", info.version);
@@ -165,29 +292,49 @@ void ext_apps_rescan(void)
     }
 }
 
+static bool same_icon(const entry_t *a, const entry_t *b)
+{
+    if (a->icon_w != b->icon_w || a->icon_h != b->icon_h || !a->icon != !b->icon) return false;
+    return !a->icon || !memcmp(a->icon, b->icon, (size_t)a->icon_w * a->icon_h * 3);
+}
+
 bool ext_apps_poll(void)
 {
     if (!__atomic_load_n(&s_scan_ready, __ATOMIC_ACQUIRE)) return false;
     bool changed = s_scan_n != s_n;
     for (int i = 0; !changed && i < s_n; i++) {
         changed = memcmp(&s_scan[i].info, &s_list[i].info, sizeof(s_list[i].info)) ||
-                  strcmp(s_scan[i].symbol, s_list[i].symbol) || s_scan[i].color != s_list[i].color;
+                  strcmp(s_scan[i].symbol, s_list[i].symbol) || s_scan[i].color != s_list[i].color ||
+                  strcmp(s_scan[i].folder, s_list[i].folder) || !same_icon(&s_scan[i], &s_list[i]);
     }
     /* Don't swap the list under an open SD app. */
     if (changed && launcher_current_app() && launcher_current_app()->create == ext_create) {
         return false;
     }
     if (changed) {
+        /* The caller rebuilds the tiles right away, before anything is drawn. */
+        for (int i = 0; i < s_n; i++) free(s_list[i].icon);
+        lv_img_cache_invalidate_src(NULL);
         s_version++;
         memcpy(s_list, s_scan, sizeof(s_scan[0]) * s_scan_n);
         s_n = s_scan_n;
         for (int i = 0; i < s_n; i++) {
-            s_list[i].tile = (app_t){
-                .name = s_list[i].info.name, .symbol = s_list[i].symbol,
-                .color_hex = s_list[i].color, .create = ext_create, .destroy = ext_destroy,
+            entry_t *e = &s_list[i];
+            e->icon_dsc = (lv_img_dsc_t){
+                .header.cf = LV_IMG_CF_TRUE_COLOR_ALPHA, .header.w = e->icon_w,
+                .header.h = e->icon_h, .data_size = (uint32_t)e->icon_w * e->icon_h * 3,
+                .data = e->icon,
+            };
+            e->tile = (app_t){
+                .name = e->info.name, .symbol = e->symbol,
+                .color_hex = e->color, .create = ext_create, .destroy = ext_destroy,
+                .icon_img = e->icon ? &e->icon_dsc : NULL,
             };
         }
+    } else {
+        for (int i = 0; i < s_scan_n; i++) free(s_scan[i].icon);
     }
+    s_scan_n = 0;
     __atomic_store_n(&s_scan_ready, false, __ATOMIC_RELEASE);
     if (s_again) {
         s_again = false;
@@ -196,11 +343,12 @@ bool ext_apps_poll(void)
     return changed;
 }
 
-int ext_apps_tiles(const app_t **out, int max)
+int ext_apps_tiles(const app_t **out, int max, bool games)
 {
     int k = 0;
     for (int i = 0; i < s_n && k < max; i++) {
-        if (s_list[i].info.status != APPK_REFUSED) out[k++] = &s_list[i].tile;
+        bool g = !strcasecmp(s_list[i].folder, "Games");
+        if (s_list[i].info.status != APPK_REFUSED && g == games) out[k++] = &s_list[i].tile;
     }
     return k;
 }
@@ -230,6 +378,13 @@ static void unload_now(void)
         lv_timer_del(s_unload_timer);
         s_unload_timer = NULL;
     }
+    /* A game's background search runs the app's code: it was told to stop
+     * in destroy() and normally ends within a few ms. */
+    for (int i = 0; s_loaded && game_worker_busy() && i < 300; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (s_loaded && game_worker_busy()) {
+        ESP_LOGE(TAG, "The app's background job didn't stop; keeping its code loaded");
+        s_loaded = false;               /* leaked on purpose: unloading would crash */
+    }
     if (s_loaded) {
         esp_elf_deinit(&s_elf);
         s_loaded = false;
@@ -240,8 +395,9 @@ static void unload_now(void)
 
 static void unload_cb(lv_timer_t *t)
 {
-    (void)t;
-    s_unload_timer = NULL;                      /* repeat count 1: LVGL deletes it */
+    if (game_worker_busy()) return;             /* try again in a second */
+    lv_timer_del(t);
+    s_unload_timer = NULL;
     unload_now();
 }
 
@@ -291,10 +447,13 @@ static void run(lv_obj_t *parent, uint8_t *buf, const appk_info_t *info)
     }
     s_loaded = true;
     s_def = NULL;
+    snprintf(s_cur_name, sizeof(s_cur_name), "%s", info->name);
+    memcpy(s_cur_key, info->is_signed ? info->key_id : (const uint8_t[8]){0}, 8);
     ESP_LOGI(TAG, "Starting %s %s", info->name, info->version);
     esp_elf_request(&s_elf, 0, 0, NULL);            /* app_main: registers the app */
-    if (!s_def || !s_def->create || s_def->api_version != DASH_API_VERSION) {
-        snprintf(text, sizeof(text), s_def && s_def->api_version != DASH_API_VERSION ?
+    bool version_ok = s_def && s_def->api_version >= 1 && s_def->api_version <= DASH_API_VERSION;
+    if (!s_def || !s_def->create || !version_ok) {
+        snprintf(text, sizeof(text), s_def && !version_ok ?
                  "This app was made for a different version of the dashboard." :
                  "This app didn't start properly (it didn't register itself).");
         unload_now();
@@ -396,7 +555,6 @@ static void ext_destroy(void)
      * their callbacks may point into the app's code, so unload it later. */
     if (s_loaded && !s_unload_timer) {
         s_unload_timer = lv_timer_create(unload_cb, 1000, NULL);
-        lv_timer_set_repeat_count(s_unload_timer, 1);
     }
 }
 

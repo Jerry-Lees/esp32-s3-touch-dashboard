@@ -305,7 +305,21 @@ appk_status_t app_keys_check(const uint8_t *d, size_t len, appk_info_t *info,
     }
     info->elf = d + APPK_HDR;
     info->elf_len = elf_len;
-    size_t body = APPK_HDR + elf_len;
+    /* Optional tile picture after the code, covered by the signature. */
+    field(info->folder, sizeof(info->folder), d + 84, 16, true);
+    uint16_t iw = rd16(d + 100), ih = rd16(d + 102);
+    uint32_t icon_len = rd32(d + 104);
+    if (icon_len != (uint32_t)iw * ih * 3 || iw > APPK_ICON_MAX || ih > APPK_ICON_MAX ||
+        icon_len > len - APPK_HDR - elf_len) {
+        snprintf(why, why_len, "the file is damaged");
+        return APPK_REFUSED;
+    }
+    if (icon_len) {
+        info->icon = d + APPK_HDR + elf_len;
+        info->icon_w = iw;
+        info->icon_h = ih;
+    }
+    size_t body = APPK_HDR + elf_len + icon_len;
     mbedtls_sha256(d, body, info->sha, 0);
 
     if (info->is_signed) {

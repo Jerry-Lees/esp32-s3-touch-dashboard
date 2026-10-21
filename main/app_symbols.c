@@ -1354,6 +1354,25 @@ extern char dash_clock_24h;
 extern char dash_alloc;
 extern char dash_free;
 extern char dash_now_ms;
+extern char dash_get_int;
+extern char dash_set_int;
+extern char dash_keep;
+extern char game_board_create;
+extern char game_board_set_flipped;
+extern char game_board_set_marks;
+extern char game_board_draw_img;
+extern char game_worker_start;
+extern char game_worker_busy;
+extern char game_worker_yield;
+extern char game_time_us;
+extern char game_random;
+extern char game_dialog_open;
+extern char game_dialog_button;
+extern char game_dialog_close;
+extern char game_button;
+extern char game_level_selector;
+extern char game_level_names;
+extern char game_swipe_layer;
 #pragma GCC diagnostic pop
 
 const struct esp_elfsym g_dash_app_symbols[] = {
@@ -2705,5 +2724,24 @@ const struct esp_elfsym g_dash_app_symbols[] = {
     ESP_ELFSYM_EXPORT(dash_alloc),
     ESP_ELFSYM_EXPORT(dash_free),
     ESP_ELFSYM_EXPORT(dash_now_ms),
+    ESP_ELFSYM_EXPORT(dash_get_int),
+    ESP_ELFSYM_EXPORT(dash_set_int),
+    ESP_ELFSYM_EXPORT(dash_keep),
+    ESP_ELFSYM_EXPORT(game_board_create),
+    ESP_ELFSYM_EXPORT(game_board_set_flipped),
+    ESP_ELFSYM_EXPORT(game_board_set_marks),
+    ESP_ELFSYM_EXPORT(game_board_draw_img),
+    ESP_ELFSYM_EXPORT(game_worker_start),
+    ESP_ELFSYM_EXPORT(game_worker_busy),
+    ESP_ELFSYM_EXPORT(game_worker_yield),
+    ESP_ELFSYM_EXPORT(game_time_us),
+    ESP_ELFSYM_EXPORT(game_random),
+    ESP_ELFSYM_EXPORT(game_dialog_open),
+    ESP_ELFSYM_EXPORT(game_dialog_button),
+    ESP_ELFSYM_EXPORT(game_dialog_close),
+    ESP_ELFSYM_EXPORT(game_button),
+    ESP_ELFSYM_EXPORT(game_level_selector),
+    ESP_ELFSYM_EXPORT(game_level_names),
+    ESP_ELFSYM_EXPORT(game_swipe_layer),
     ESP_ELFSYM_END
 };

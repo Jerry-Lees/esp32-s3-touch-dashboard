@@ -1,0 +1,8 @@
+{
+  "name": "Chess",
+  "version": "2.0",
+  "symbol": "shuffle",
+  "color": "0x6D4C41",
+  "folder": "Games",
+  "icon": "icon.png"
+}

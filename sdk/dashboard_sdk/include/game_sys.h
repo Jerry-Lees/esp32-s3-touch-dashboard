@@ -2,7 +2,7 @@
 /*
  * The few system services the game engines need, kept separate so the
  * engines also compile on a PC for testing (see test/host/).
- * Implemented in game_common.c on the device.
+ * Implemented in the firmware's game_common.c.
  */
 #include <stdint.h>
 

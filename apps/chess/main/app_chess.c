@@ -1,8 +1,9 @@
 /*
  * Chess app: play against the computer at four difficulty levels.
  *
- * The game lives in static memory, so leaving the app and coming back
- * resumes it (until the device restarts). The computer's search runs in
+ * An SD card app (tools/build_app.sh apps/chess). The game is kept in a
+ * dash_keep() block, so leaving the app and coming back resumes it (until
+ * the device restarts). The computer's search runs in
  * the game worker task (game_common.c); the lv_timer `tick` starts it and
  * picks up its answer. s_gen invalidates a search whose position is no
  * longer current (undo, new game, leaving the app).
@@ -12,13 +13,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_heap_caps.h"
-
 #include "lvgl.h"
-#include "app_framework.h"
+#include "dash_style.h"
+#include "dashboard_app.h"
 #include "chess_engine.h"
 #include "game_common.h"
-#include "settings.h"
+
+/* chess_images.c */
+extern const lv_img_dsc_t img_chess_w_king, img_chess_w_queen, img_chess_w_rook,
+                          img_chess_w_bishop, img_chess_w_knight, img_chess_w_pawn;
+extern const lv_img_dsc_t img_chess_b_king, img_chess_b_queen, img_chess_b_rook,
+                          img_chess_b_bishop, img_chess_b_knight, img_chess_b_pawn;
 
 #define HIST_MAX          600
 #define RESULT_REPETITION 100     /* in addition to chess_status_t values */
@@ -29,18 +34,20 @@ typedef struct {
     chess_move_t move;
 } hist_t;
 
-/* ---- game state (kept while the app is closed) ---- */
-static struct {
+/* ---- game state (a dash_keep block: kept while the app is closed) ---- */
+typedef struct {
     bool         started;
     chess_pos_t  pos;
-    hist_t      *hist;
+    hist_t       hist[HIST_MAX];
     int          hist_len;
     int8_t       human;           /* CH_WHITE or CH_BLACK */
     int          level;
     int          result;          /* chess_status_t or RESULT_REPETITION */
     chess_move_t last;
     char         last_text[40];
-} G;
+} game_t;
+static game_t *s_game;
+#define G (*s_game)
 
 /* ---- computer player ---- */
 static struct {
@@ -323,7 +330,7 @@ static void level_changed(lv_event_t *e)
     uint16_t id = lv_btnmatrix_get_selected_btn(lv_event_get_target(e));
     if (id < GAME_LEVELS) {
         G.level = id;
-        settings_set_u8("chess_lvl", id);
+        dash_set_int("chess_lvl", id);
     }
 }
 
@@ -344,12 +351,15 @@ static lv_obj_t *panel_label(lv_obj_t *parent, const lv_font_t *font, uint32_t c
 
 static void chess_create(lv_obj_t *parent)
 {
-    if (!G.hist) {
-        G.hist = heap_caps_malloc(sizeof(hist_t) * HIST_MAX, MALLOC_CAP_SPIRAM);
-        if (!G.hist) G.hist = malloc(sizeof(hist_t) * HIST_MAX);
+    s_game = dash_keep("game", sizeof(game_t));
+    if (!s_game) {
+        lv_obj_t *l = lv_label_create(parent);
+        lv_label_set_text(l, "Not enough memory for the game.");
+        lv_obj_center(l);
+        return;
     }
     if (!G.started) {
-        G.level = settings_get_u8("chess_lvl", 1);
+        G.level = dash_get_int("chess_lvl", 1);
         reset_game(CH_WHITE);
     }
 
@@ -399,19 +409,13 @@ static void chess_destroy(void)
     s_sel = -1;
 }
 
-static void chess_tile_icon(lv_obj_t *holder, int size)
+int app_main(int argc, char *argv[])
 {
-    lv_obj_t *img = lv_img_create(holder);
-    lv_img_set_src(img, &img_chess_w_knight);
-    lv_img_set_zoom(img, (uint16_t)(256 * size / img_chess_w_knight.header.w));
-    lv_obj_center(img);
+    (void)argc;
+    (void)argv;
+    static const dash_app_def_t def = {
+        .api_version = DASH_API_VERSION, .create = chess_create, .destroy = chess_destroy,
+    };
+    dash_app_register(&def);
+    return 0;
 }
-
-const app_t chess_app = {
-    .name      = "Chess",
-    .symbol    = LV_SYMBOL_SHUFFLE,
-    .color_hex = 0x6D4C41,
-    .create    = chess_create,
-    .destroy   = chess_destroy,
-    .draw_icon = chess_tile_icon,
-};

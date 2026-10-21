@@ -23,5 +23,7 @@ mkdir -p "$OUT"
     echo "Build failed; full log: $OUT/$NAME.log"
     exit 1
 }
-python "$ROOT/tools/appkey.py" sign "$OUT/$NAME/$NAME.app.elf" "$APP/app.json" \
+# The ELF is named after the project() in the app's CMakeLists.txt.
+ELF="$(ls "$OUT/$NAME"/*.app.elf | head -1)"
+python "$ROOT/tools/appkey.py" sign "$ELF" "$APP/app.json" \
     -o "$OUT/$NAME.app" "$@"

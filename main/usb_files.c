@@ -47,6 +47,7 @@
 #include "mbedtls/base64.h"
 
 #include "dashpad.h"
+#include "ext_apps.h"
 #include "screenshot.h"
 #include "sd_card.h"
 #include "usb_files.h"
@@ -54,14 +55,14 @@
 
 static const char *TAG = "usb_files";
 
-#define LINE_MAX     4096
+#define CMD_LINE_MAX 4096
 #define CHUNK        2048              /* file bytes per data line (2732 in base64) */
 #define REL_MAX      200
 #define PATH_MAX_LEN 320
 #define TIMEOUT_MS   10000             /* give up on a silent PC */
 #define RETRIES      5
 
-static char    *s_line;                /* LINE_MAX + 1 */
+static char    *s_line;                /* CMD_LINE_MAX + 1 */
 static size_t   s_len;
 static uint8_t  s_rx[512];             /* bytes read but not used yet */
 static size_t   s_rx_len, s_rx_pos;
@@ -91,7 +92,7 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n)
 
 /* ---------- lines in and out ---------- */
 
-static char *s_out;                    /* LINE_MAX + 1 */
+static char *s_out;                    /* CMD_LINE_MAX + 1 */
 
 /* Writes one line straight to the driver (the VFS path goes a character at
  * a time), holding the stdout lock so a log line can't land in the middle. */
@@ -99,10 +100,10 @@ static void out(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    int n = vsnprintf(s_out, LINE_MAX + 1, fmt, ap);
+    int n = vsnprintf(s_out, CMD_LINE_MAX + 1, fmt, ap);
     va_end(ap);
     if (n < 0) return;
-    if (n > LINE_MAX) n = LINE_MAX;
+    if (n > CMD_LINE_MAX) n = CMD_LINE_MAX;
     flockfile(stdout);
     fflush(stdout);
     for (int sent = 0; sent < n;) {
@@ -144,7 +145,7 @@ static const char *read_line(int timeout_ms)
             if (!bad) return s_line;
             continue;
         }
-        if (s_len < LINE_MAX) s_line[s_len++] = (char)c;
+        if (s_len < CMD_LINE_MAX) s_line[s_len++] = (char)c;
         else s_overflow = true;
     }
 }
@@ -390,6 +391,7 @@ static void cmd_put(const char *args)
     }
     out("@@ok done\n");
     sd_card_notice("Received %s over USB", rel);
+    if (!strncmp(rel, "apps/", 5)) ext_apps_rescan();     /* new app: show its tile */
 }
 
 static void cmd_rm(const char *arg)
@@ -410,6 +412,7 @@ static void cmd_rm(const char *arg)
     }
     out("@@ok rm\n");
     sd_card_notice("Deleted %s over USB", rel);
+    if (!strncmp(rel, "apps/", 5)) ext_apps_rescan();
 }
 
 static void cmd_mkdir(const char *arg)
@@ -468,10 +471,17 @@ static void cmd_dashpad(const char *args)
         ok = isalnum((unsigned char)*p) || *p == '.' || *p == '-';
     }
     for (const char *p = token; ok && *p; p++) ok = isxdigit((unsigned char)*p);
+#if CONFIG_DASH_APP_DASHPAD
     if (ok) {
         dashpad_pair_request(host, port, token);
         out("@@ok dashpad\n");
-    } else {
+    }
+#else
+    if (ok) {
+        out("@@err DashPad isn't in this firmware\n");
+    }
+#endif
+    else {
         out("@@err bad pairing details\n");
     }
     memset(token, 0, sizeof(token));
@@ -518,10 +528,12 @@ static void task(void *arg)
 
 void usb_files_start(void)
 {
+#if CONFIG_DASH_APP_DASHPAD
     usb_kbd_boot_fix();          /* the port may still be a keyboard after a restart */
+#endif
     usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = 8192, .tx_buffer_size = 4096 };
-    s_line = heap_caps_malloc(LINE_MAX + 1, MALLOC_CAP_SPIRAM);
-    s_out = heap_caps_malloc(LINE_MAX + 1, MALLOC_CAP_SPIRAM);
+    s_line = heap_caps_malloc(CMD_LINE_MAX + 1, MALLOC_CAP_SPIRAM);
+    s_out = heap_caps_malloc(CMD_LINE_MAX + 1, MALLOC_CAP_SPIRAM);
     s_chunk = heap_caps_malloc(CHUNK, MALLOC_CAP_SPIRAM);
     s_b64 = heap_caps_malloc(4 * ((CHUNK + 2) / 3) + 1, MALLOC_CAP_SPIRAM);
     if (!s_line || !s_out || !s_chunk || !s_b64 || usb_serial_jtag_driver_install(&cfg) != ESP_OK) {

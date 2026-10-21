@@ -36,14 +36,9 @@ esp_err_t wavesahre_rgb_lcd_bl_off(void);
  * Order = default tile order (apps with pin_last, Settings, start last);
  * the user's own order is saved in settings, see order_load().
  * Folder contents are NULL-terminated lists. */
-static const app_t *const s_games[] = {
-    &chess_app,
-    &checkers_app,
-    &flappy_app,
-    &snake_app,
-    &g2048_app,
-    NULL,
-};
+/* The games are SD card apps (apps/chess etc.) that ask for this folder;
+ * refilled by layout_home(), and only shown when it has something in it. */
+static const app_t *s_games[EXT_MAX_APPS + 1];
 
 static const app_t games_folder = {
     .name      = "Games",
@@ -73,17 +68,35 @@ static const app_t custom_folder = {
     .draw_icon = elf_tile_icon,
 };
 
+/* Optional apps are switched in menuconfig > "Dashboard apps". */
 static const app_t *const s_apps[] = {
+#if CONFIG_DASH_APP_WORLD_CLOCK
     &world_clock_app,
+#endif
+#if CONFIG_DASH_APP_TIMERS
     &timers_app,
+#endif
+#if CONFIG_DASH_APP_WEATHER
     &weather_app,
+#endif
+#if CONFIG_DASH_APP_STONKS
     &stonks_app,
+#endif
+#if CONFIG_DASH_APP_PHOTOS
     &photos_app,
+#endif
+#if CONFIG_DASH_APP_FILES
     &files_app,
+#endif
+#if CONFIG_DASH_APP_JELLYFIN
     &jellyfin_app,
+#endif
+#if CONFIG_DASH_APP_DASHPAD
     &dashpad_app,
+#endif
+#if CONFIG_DASH_APP_SERVERS
     &monitor_app,
-    &games_folder,
+#endif
     &settings_app,
 };
 #define APP_COUNT (sizeof(s_apps) / sizeof(s_apps[0]))
@@ -95,7 +108,6 @@ static lv_obj_t   *s_home_clock;
 static lv_obj_t   *s_home_wifi;
 static lv_obj_t   *s_home_status;  /* next alarm / running timer */
 static lv_obj_t   *s_home_dev;     /* "DEV" while developer mode is on */
-static bool        s_home_dirty;   /* SD apps changed: rebuild the grid */
 static bool        s_trust_open;   /* a "trust this key?" dialog is up */
 static lv_obj_t   *s_home_grid;
 static lv_obj_t   *s_home_ticker;  /* info ticker strip, or NULL */
@@ -491,7 +503,6 @@ static void home_tick(lv_timer_t *t)
     }
     if (app_keys_dev_mode()) lv_obj_clear_flag(s_home_dev, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_home_dev, LV_OBJ_FLAG_HIDDEN);
-    if (s_home_dirty && !s_edit_grid) layout_home();
 
     lv_obj_set_style_text_color(
         s_home_wifi,
@@ -535,7 +546,11 @@ static void make_tile(lv_obj_t *grid, const app_t *app, lv_coord_t w, lv_coord_t
     lv_obj_set_user_data(tile, (void *)app);
     lv_obj_add_event_cb(tile, tile_event, LV_EVENT_ALL, NULL);
 
-    if (app->draw_icon || app->folder) {
+    if (app->icon_img) {
+        lv_obj_t *img = lv_img_create(tile);
+        lv_img_set_src(img, app->icon_img);
+        lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    } else if (app->draw_icon || app->folder) {
         lv_obj_t *holder = lv_obj_create(tile);
         lv_obj_remove_style_all(holder);
         lv_obj_set_size(holder, 64, 64);
@@ -604,11 +619,13 @@ static void layout_home(void)
     const app_t *all[GRID_MAX];
     size_t n = APP_COUNT;
     memcpy(all, s_apps, sizeof(s_apps));
-    int ext = ext_apps_tiles(s_custom, EXT_MAX_APPS);
+    int games = ext_apps_tiles(s_games, EXT_MAX_APPS, true);
+    s_games[games] = NULL;
+    if (games > 0) all[n++] = &games_folder;
+    int ext = ext_apps_tiles(s_custom, EXT_MAX_APPS, false);
     s_custom[ext] = NULL;
     if (ext > 0) all[n++] = &custom_folder;
     s_home_grid = build_grid(s_home_scr, all, n, h, ticker, "ord_home");
-    s_home_dirty = false;
     if (ticker) {
         s_home_ticker = ticker_create(s_home_scr);
         ticker_set_running(lv_scr_act() == s_home_scr);
@@ -739,7 +756,11 @@ static void screen_timeout_tick(lv_timer_t *t)
         return;
     }
     int minutes = settings_get_screen_timeout_min();
-    if (s_wake_catcher || minutes == 0 || s_current_app == &photos_app || clock_tools_alerting() ||
+    if (s_wake_catcher || minutes == 0 ||
+#if CONFIG_DASH_APP_PHOTOS
+        s_current_app == &photos_app ||
+#endif
+        clock_tools_alerting() ||
         s_trust_open) {
         return;                          /* the Photos app is a photo frame: stay on */
     }
@@ -1067,10 +1088,15 @@ static void notice_tick(lv_timer_t *t)
         /* Problems stay up longer so there's time to read them. */
         launcher_toast(msg, strstr(msg, "not imported") ? 15000 : 6000);
     }
+#if CONFIG_DASH_APP_SERVERS
     else if (monitor_take_alert(msg, sizeof(msg))) {
         launcher_toast(msg, 8000);
     }
-    if (ext_apps_poll()) s_home_dirty = true;
+#endif
+    /* A new SD app list frees the old tile pictures, so it's only taken
+     * while no folder or rearranging grid shows them, and the home grid is
+     * rebuilt at once. */
+    if (s_home_scr && !s_folder_scr && !s_edit_grid && ext_apps_poll()) layout_home();
     trust_prompt();
 }
 
@@ -1088,8 +1114,12 @@ void launcher_start(void)
     settings_init();   /* also initializes NVS, before Wi-Fi needs it */
     app_keys_init();
     ext_apps_init();
+#if CONFIG_DASH_APP_DASHPAD
     dashpad_init();
+#endif
+#if CONFIG_DASH_APP_SERVERS
     monitor_init();
+#endif
     wifi_list_init();
     net_time_start();
     build_home();

@@ -16,10 +16,48 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${keys_dir}" ${BUILTIN_KEYS})
 endif()
 
+# Always built in.
+set(srcs "waveshare_rgb_lcd_port.c" "main.c" "lvgl_port.c" "launcher.c" "net_time.c" "settings.c"
+         "rtc.c" "game_common.c" "ticker.c" "screenshot.c"
+         "sd_card.c" "wifi_list.c" "settings_backup.c" "photo_frame.c" "pic_decode.c" "usb_files.c"
+         "clock_tools.c" "json_skip.c" "app_keys.c" "ext_apps.c" "app_symbols.c" "elf_icon.c"
+         "app_settings.c")
+set(embed "${BUILTIN_KEYS_TXT}")
+
+# Optional apps: switches in menuconfig > "Dashboard apps" (main/Kconfig.projbuild).
+if(CONFIG_DASH_APP_WORLD_CLOCK)
+    list(APPEND srcs "app_world_clock.c")
+endif()
+if(CONFIG_DASH_APP_TIMERS)
+    list(APPEND srcs "app_timers.c")
+endif()
+if(CONFIG_DASH_APP_WEATHER)
+    list(APPEND srcs "app_weather.c")
+endif()
+if(CONFIG_DASH_APP_STONKS)
+    list(APPEND srcs "app_stonks.c" "stonks_icon.c")
+endif()
+if(CONFIG_DASH_APP_PHOTOS)
+    list(APPEND srcs "app_photos.c")
+endif()
+if(CONFIG_DASH_APP_FILES)
+    list(APPEND srcs "app_files.c")
+endif()
+if(CONFIG_DASH_APP_JELLYFIN)
+    list(APPEND srcs "jellyfin.c" "app_jellyfin.c")
+endif()
+if(CONFIG_DASH_APP_DASHPAD)
+    list(APPEND srcs "dashpad.c" "app_dashpad.c" "usb_kbd.c")
+    list(APPEND embed "../dashpad/dashpad.json")
+endif()
+if(CONFIG_DASH_APP_SERVERS)
+    list(APPEND srcs "monitor.c" "app_monitor.c")
+endif()
+
 idf_component_register(
-    SRCS "waveshare_rgb_lcd_port.c" "main.c" "lvgl_port.c" "launcher.c" "app_world_clock.c" "net_time.c" "app_weather.c" "settings.c" "rtc.c" "game_common.c" "game_images.c" "chess_engine.c" "app_chess.c" "checkers_engine.c" "app_checkers.c" "app_flappy.c" "app_snake.c" "app_2048.c" "app_stonks.c" "ticker.c" "screenshot.c" "sd_card.c" "wifi_list.c" "settings_backup.c" "photo_frame.c" "pic_decode.c" "app_photos.c" "app_files.c" "usb_files.c" "clock_tools.c" "app_timers.c" "jellyfin.c" "app_jellyfin.c" "dashpad.c" "app_dashpad.c" "usb_kbd.c" "monitor.c" "app_monitor.c" "json_skip.c" "app_keys.c" "ext_apps.c" "app_symbols.c" "elf_icon.c" "stonks_icon.c" "app_settings.c"
+    SRCS ${srcs}
     INCLUDE_DIRS "." "../sdk/dashboard_sdk/include"
-    EMBED_TXTFILES "${BUILTIN_KEYS_TXT}" "../dashpad/dashpad.json")
+    EMBED_TXTFILES ${embed})
 
 idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
 target_compile_options(${lvgl_lib} PRIVATE -Wno-format)

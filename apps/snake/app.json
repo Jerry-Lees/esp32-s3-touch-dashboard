@@ -1,0 +1,8 @@
+{
+  "name": "Snake",
+  "version": "2.0",
+  "symbol": "shuffle",
+  "color": "0x43A047",
+  "folder": "Games",
+  "icon": "icon.png"
+}

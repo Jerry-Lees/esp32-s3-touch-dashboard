@@ -625,6 +625,24 @@ CONFIG_EXAMPLE_LVGL_PORT_ROTATION_DEGREE=0
 # end of Example Configuration
 
 #
+# Dashboard apps
+#
+
+#
+# Built-in apps to include. Settings, Custom Apps (SD card apps) and the photo screensaver are always included.
+#
+CONFIG_DASH_APP_WORLD_CLOCK=y
+CONFIG_DASH_APP_TIMERS=y
+CONFIG_DASH_APP_WEATHER=y
+CONFIG_DASH_APP_STONKS=y
+CONFIG_DASH_APP_PHOTOS=y
+CONFIG_DASH_APP_FILES=y
+CONFIG_DASH_APP_JELLYFIN=y
+CONFIG_DASH_APP_DASHPAD=y
+CONFIG_DASH_APP_SERVERS=y
+# end of Dashboard apps
+
+#
 # Compiler options
 #
 CONFIG_COMPILER_OPTIMIZATION_DEBUG=y

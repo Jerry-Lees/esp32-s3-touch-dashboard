@@ -24,6 +24,7 @@
 #define APPK_NAME_MAX   32
 #define APPK_HDR        128         /* .app header size */
 #define APPK_MAX_FILE   (2 * 1024 * 1024)
+#define APPK_ICON_MAX   64          /* tile picture, pixels per side */
 
 typedef struct {
     char    name[APPK_NAME_MAX];
@@ -49,6 +50,9 @@ typedef struct {
     uint8_t  sha[32];               /* SHA-256 of header + code */
     const uint8_t *elf;             /* points into the checked data */
     size_t   elf_len;
+    char     folder[16];            /* "Games", or "" (Custom Apps) */
+    const uint8_t *icon;            /* LVGL TRUE_COLOR_ALPHA pixels, or NULL */
+    uint16_t icon_w, icon_h;        /* at most APPK_ICON_MAX */
 } appk_info_t;
 
 void app_keys_init(void);

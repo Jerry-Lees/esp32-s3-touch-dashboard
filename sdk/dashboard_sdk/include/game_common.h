@@ -1,10 +1,11 @@
 #pragma once
 /*
- * Shared pieces for board games (Chess, Checkers):
+ * The game kit, implemented in the firmware (main/game_common.c) and offered
+ * to SD card apps (API 2; the games in apps/ use it):
  *   - an 8x8 board widget that draws itself and reports taps,
  *   - a background worker so the computer can think without freezing the UI,
  *   - a simple modal dialog and the side-panel controls,
- *   - the piece images from game_images.c.
+ *   - swipe input.
  *
  * Board coordinates: row 0..7 from the bottom (row 0 = rank 1 in chess),
  * col 0..7 from the left. Square index = row * 8 + col.
@@ -54,7 +55,9 @@ void game_board_draw_img(lv_draw_ctx_t *ctx, const lv_area_t *area,
  * Runs one job at a time in its own FreeRTOS task on core 0 (LVGL runs on
  * core 1). The job must NOT call LVGL; it writes its result into `arg`.
  * Poll game_worker_busy() from an lv_timer; once it returns false the
- * result is safe to read. */
+ * result is safe to read. In an SD card app, make the job stop quickly when
+ * the app closes (destroy() sets a flag the job checks): the display only
+ * unloads the app's code once the job has finished. */
 bool game_worker_start(void (*fn)(void *arg), void *arg);
 bool game_worker_busy(void);
 
@@ -85,10 +88,3 @@ typedef enum { GAME_DIR_UP, GAME_DIR_RIGHT, GAME_DIR_DOWN, GAME_DIR_LEFT,
  * that doesn't move reports GAME_DIR_TAP on release. Create it before any
  * buttons so they stay on top. Only one layer exists at a time. */
 lv_obj_t *game_swipe_layer(lv_obj_t *parent, bool repeat, void (*cb)(game_dir_t dir));
-
-/* ---------- images (game_images.c) ---------- */
-extern const lv_img_dsc_t img_chess_w_king, img_chess_w_queen, img_chess_w_rook,
-                          img_chess_w_bishop, img_chess_w_knight, img_chess_w_pawn;
-extern const lv_img_dsc_t img_chess_b_king, img_chess_b_queen, img_chess_b_rook,
-                          img_chess_b_bishop, img_chess_b_knight, img_chess_b_pawn;
-extern const lv_img_dsc_t img_game_crown;

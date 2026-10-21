@@ -25,7 +25,12 @@
  *
  * Available: the LVGL 8.4 API (including the Montserrat 14/20/28/48 fonts),
  * common C library functions (string, stdio formatting, malloc, time, math
- * such as sinf/cosf) and the functions below.
+ * such as sinf/cosf), the functions below, the dashboard's fonts and colours
+ * (dash_style.h) and the game kit (game_common.h: board widget, background
+ * worker, dialogs, swipe input).
+ *
+ * Versions: 1 = the first API; 2 adds dash_get_int/dash_set_int, dash_keep
+ * and the game kit. The display runs apps made for its version or older.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -37,7 +42,7 @@
 extern "C" {
 #endif
 
-#define DASH_API_VERSION 1
+#define DASH_API_VERSION 2
 
 typedef struct {
     uint32_t api_version;               /* DASH_API_VERSION */
@@ -64,6 +69,23 @@ void  dash_free(void *p);
 
 /* Wall-clock time in milliseconds since 1970 (for smooth animations). */
 int64_t dash_now_ms(void);
+
+/* ---- API 2 ---- */
+
+/* Saved numbers (kept across restarts and in the Settings backup). Keys are
+ * 1-14 characters; start them with your app's name ("snake_best") so they
+ * don't clash with other apps. dash_get_int returns def if nothing's saved. */
+int32_t dash_get_int(const char *key, int32_t def);
+void    dash_set_int(const char *key, int32_t value);
+
+/* A block of PSRAM that stays until the display restarts, for state that
+ * should survive closing the app (a game in progress). The first call gives
+ * zeroed memory; later ones with the same name and size give the same block
+ * back (a new size starts over). Each app has its own names. At most 8 per
+ * app and 256 KB each; NULL if that's exceeded or memory is short.
+ * Don't keep pointers to your app's code or static data in it: the app may
+ * be loaded at another address next time. */
+void *dash_keep(const char *name, size_t size);
 
 #ifdef __cplusplus
 }

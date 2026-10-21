@@ -6,7 +6,8 @@ against it). Contents:
 
   - every global symbol of the compiled LVGL library (lv_*, _lv_*),
   - the C library / math / compiler helpers in EXTRA below,
-  - the dashboard API (dash_*, sdk/dashboard_sdk/include/dashboard_app.h).
+  - the dashboard API (dash_*, sdk/dashboard_sdk/include/dashboard_app.h)
+    and the game kit (game_*, game_common.h / game_sys.h).
 
 Run after a firmware build whenever LVGL's configuration changes (new
 widgets or fonts), then build again:
@@ -35,7 +36,11 @@ __gedf2 __unorddf2 __floatsidf __floatunsidf __floatdidf __fixdfsi __fixunsdfsi 
 __extendsfdf2 __truncdfsf2 __divsf3 __floatdisf __floatundisf __fixsfdi __fixunssfdi
 __divdi3 __udivdi3 __moddi3 __umoddi3 __ashldi3 __ashrdi3 __lshrdi3
 dash_app_register dash_toast dash_time_is_set dash_clock_24h dash_alloc dash_free
-dash_now_ms
+dash_now_ms dash_get_int dash_set_int dash_keep
+game_board_create game_board_set_flipped game_board_set_marks game_board_draw_img
+game_worker_start game_worker_busy game_worker_yield game_time_us game_random
+game_dialog_open game_dialog_button game_dialog_close game_button game_level_selector
+game_level_names game_swipe_layer
 """.split()
 
 

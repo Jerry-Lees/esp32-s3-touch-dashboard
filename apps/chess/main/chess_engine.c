@@ -15,10 +15,6 @@
 #include "chess_engine.h"
 #include "game_sys.h"
 
-#ifdef ESP_PLATFORM
-#include "esp_heap_caps.h"
-#endif
-
 /* ---------- board geometry ---------- */
 
 #define X10   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
@@ -498,8 +494,10 @@ static const level_t LEVELS[4] = {
     { 7, true,    0, 6000 },
 };
 
+/* MAX_PLY move lists (in the app's memory, freed when it closes). */
+static chess_move_t s_arena[MAX_PLY * CH_MAX_MOVES];
+
 static struct {
-    chess_move_t  *arena;            /* MAX_PLY move lists */
     chess_move_t   killers[MAX_PLY][2];
     int64_t        deadline;
     volatile bool *abort;
@@ -538,7 +536,7 @@ static int qsearch(const chess_pos_t *p, int alpha, int beta, int ply)
     if (stand > alpha) alpha = stand;
     if (ply >= MAX_PLY - 1) return stand;
 
-    chess_move_t *moves = S.arena + ply * CH_MAX_MOVES;
+    chess_move_t *moves = s_arena + ply * CH_MAX_MOVES;
     int n = gen(p, moves, true);
     for (int i = 0; i < n; i++) {
         pick(moves, i, n);
@@ -567,7 +565,7 @@ static int negamax(const chess_pos_t *p, int depth, int alpha, int beta, int ply
     if (depth <= 0) return S.use_qs ? qsearch(p, alpha, beta, ply) : evaluate(p);
     if (ply >= MAX_PLY - 1) return evaluate(p);
 
-    chess_move_t *moves = S.arena + ply * CH_MAX_MOVES;
+    chess_move_t *moves = s_arena + ply * CH_MAX_MOVES;
     int n = gen(p, moves, false);
 
     /* Quiet moves that caused a cutoff at this ply before go first. */
@@ -620,15 +618,6 @@ chess_move_t chess_search(const chess_pos_t *p, int level, volatile bool *abort)
     int n = chess_legal_moves(p, root);
     if (n == 0) return 0;
     if (n == 1) return root[0];
-
-    if (!S.arena) {
-        size_t sz = sizeof(chess_move_t) * MAX_PLY * CH_MAX_MOVES;
-#ifdef ESP_PLATFORM
-        S.arena = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
-#endif
-        if (!S.arena) S.arena = malloc(sz);
-        if (!S.arena) return root[game_random() % n];
-    }
 
     memset(S.killers, 0, sizeof(S.killers));
     S.abort = abort;

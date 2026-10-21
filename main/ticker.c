@@ -45,13 +45,19 @@ static int collect_items(void)
         if (!T.items) return 0;
     }
     int n = 0;
+#if CONFIG_DASH_APP_WEATHER
     if (settings_get_ticker_weather()) {
         n += weather_ticker_items(T.items + n, MAX_ITEMS - n);
     }
+#endif
+#if CONFIG_DASH_APP_STONKS
     if (settings_get_ticker_stocks()) {
         n += stonks_ticker_items(T.items + n, MAX_ITEMS - n);
     }
+#endif
+#if CONFIG_DASH_APP_SERVERS
     n += monitor_ticker_items(T.items + n, MAX_ITEMS - n);
+#endif
     return n;
 }
 
@@ -159,6 +165,10 @@ void ticker_set_running(bool on)
 void ticker_service(void)
 {
     if (!settings_get_ticker()) return;
+#if CONFIG_DASH_APP_WEATHER
     if (settings_get_ticker_weather()) weather_background_tick();
+#endif
+#if CONFIG_DASH_APP_STONKS
     if (settings_get_ticker_stocks()) stonks_background_tick();
+#endif
 }

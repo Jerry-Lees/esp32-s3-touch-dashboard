@@ -1,0 +1,8 @@
+{
+  "name": "Flappy",
+  "version": "2.0",
+  "symbol": "up",
+  "color": "0x039BE5",
+  "folder": "Games",
+  "icon": "icon.png"
+}

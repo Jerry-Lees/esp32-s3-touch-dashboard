@@ -8,16 +8,18 @@
  * drawn by a custom draw callback so scrolling them is cheap.
  *
  * The game gets slightly harder as the score rises: pipes move faster and
- * gaps get narrower, up to a limit. The best score is saved in NVS.
+ * gaps get narrower, up to a limit. The best score is saved with dash_set_int.
+ *
+ * An SD card app: tools/build_app.sh apps/flappy
  */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "lvgl.h"
-#include "app_framework.h"
+#include "dash_style.h"
+#include "dashboard_app.h"
 #include "game_sys.h"
-#include "settings.h"
 
 extern const lv_img_dsc_t img_flappy_bird_0, img_flappy_bird_1;
 
@@ -227,7 +229,7 @@ static void game_over(void)
     if (F.score > F.best) {
         F.best = F.score;
         F.new_best = true;
-        settings_set_i32("flappy_best", F.best);
+        dash_set_int("flappy_best", F.best);
     }
     lv_label_set_text_fmt(F.panel_text, "Score: %d\nBest: %d%s\n\nTap to play again",
                           F.score, F.best, F.new_best ? "  (new!)" : "");
@@ -360,7 +362,7 @@ static lv_obj_t *big_label(lv_obj_t *parent, uint32_t color, int dx, int dy)
 static void flappy_create(lv_obj_t *parent)
 {
     memset(&F, 0, sizeof(F));
-    F.best = settings_get_i32("flappy_best", 0);
+    F.best = dash_get_int("flappy_best", 0);
 
     lv_obj_set_style_bg_color(parent, lv_color_hex(C_SKY), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
@@ -445,19 +447,13 @@ static void flappy_destroy(void)
     memset(&F, 0, sizeof(F));
 }
 
-static void flappy_tile_icon(lv_obj_t *holder, int size)
+int app_main(int argc, char *argv[])
 {
-    lv_obj_t *img = lv_img_create(holder);
-    lv_img_set_src(img, &img_flappy_bird_0);
-    lv_img_set_zoom(img, (uint16_t)(256 * size / img_flappy_bird_0.header.w));
-    lv_obj_center(img);
+    (void)argc;
+    (void)argv;
+    static const dash_app_def_t def = {
+        .api_version = DASH_API_VERSION, .create = flappy_create, .destroy = flappy_destroy,
+    };
+    dash_app_register(&def);
+    return 0;
 }
-
-const app_t flappy_app = {
-    .name      = "Flappy",
-    .symbol    = LV_SYMBOL_UP,
-    .color_hex = 0x039BE5,
-    .create    = flappy_create,
-    .destroy   = flappy_destroy,
-    .draw_icon = flappy_tile_icon,
-};

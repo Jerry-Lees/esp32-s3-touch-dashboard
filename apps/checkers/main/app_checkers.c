@@ -5,21 +5,22 @@
  * tap each landing square in turn; the piece follows along and the jumped
  * pieces fade until the move is complete.
  *
- * Same structure as app_chess.c: the game stays in static memory while
- * the app is closed, and the computer thinks in the game worker task.
+ * An SD card app with the same structure as apps/chess: the game is kept
+ * in a dash_keep() block while the app is closed, and the computer thinks in
+ * the game worker task.
  */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_heap_caps.h"
-
 #include "lvgl.h"
-#include "app_framework.h"
+#include "dash_style.h"
+#include "dashboard_app.h"
 #include "checkers_engine.h"
 #include "game_common.h"
-#include "settings.h"
+
+extern const lv_img_dsc_t img_game_crown;          /* checkers_images.c */
 
 #define HIST_MAX          600
 #define RESULT_REPETITION 100     /* in addition to ck_status_t values */
@@ -37,11 +38,11 @@ typedef struct {
     ck_move_t move;
 } hist_t;
 
-/* ---- game state (kept while the app is closed) ---- */
-static struct {
+/* ---- game state (a dash_keep block: kept while the app is closed) ---- */
+typedef struct {
     bool      started;
     ck_pos_t  pos;
-    hist_t   *hist;
+    hist_t    hist[HIST_MAX];
     int       hist_len;
     int8_t    human;              /* CK_RED or CK_WHITE */
     int       level;
@@ -49,7 +50,9 @@ static struct {
     ck_move_t last;
     bool      has_last;
     char      last_text[40];
-} G;
+} game_t;
+static game_t *s_game;
+#define G (*s_game)
 
 /* ---- computer player ---- */
 static struct {
@@ -373,7 +376,7 @@ static void level_changed(lv_event_t *e)
     uint16_t id = lv_btnmatrix_get_selected_btn(lv_event_get_target(e));
     if (id < GAME_LEVELS) {
         G.level = id;
-        settings_set_u8("checkers_lvl", id);
+        dash_set_int("checkers_lvl", id);
     }
 }
 
@@ -394,12 +397,15 @@ static lv_obj_t *panel_label(lv_obj_t *parent, const lv_font_t *font, uint32_t c
 
 static void checkers_create(lv_obj_t *parent)
 {
-    if (!G.hist) {
-        G.hist = heap_caps_malloc(sizeof(hist_t) * HIST_MAX, MALLOC_CAP_SPIRAM);
-        if (!G.hist) G.hist = malloc(sizeof(hist_t) * HIST_MAX);
+    s_game = dash_keep("game", sizeof(game_t));
+    if (!s_game) {
+        lv_obj_t *l = lv_label_create(parent);
+        lv_label_set_text(l, "Not enough memory for the game.");
+        lv_obj_center(l);
+        return;
     }
     if (!G.started) {
-        G.level = settings_get_u8("checkers_lvl", 1);
+        G.level = dash_get_int("checkers_lvl", 1);
         reset_game(CK_RED);
     }
 
@@ -448,36 +454,13 @@ static void checkers_destroy(void)
     s_plen = 0;
 }
 
-static void disc(lv_obj_t *holder, int x, int y, int d, uint32_t fill, uint32_t edge)
+int app_main(int argc, char *argv[])
 {
-    lv_obj_t *o = lv_obj_create(holder);
-    lv_obj_remove_style_all(o);
-    lv_obj_set_size(o, d, d);
-    lv_obj_set_pos(o, x, y);
-    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(o, lv_color_hex(fill), 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(o, lv_color_hex(edge), 0);
-    lv_obj_set_style_border_width(o, 3, 0);
-    lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    (void)argc;
+    (void)argv;
+    static const dash_app_def_t def = {
+        .api_version = DASH_API_VERSION, .create = checkers_create, .destroy = checkers_destroy,
+    };
+    dash_app_register(&def);
+    return 0;
 }
-
-static void checkers_tile_icon(lv_obj_t *holder, int size)
-{
-    int d = size * 5 / 8;
-    disc(holder, 0, size - d, d, C_IVORY, C_IVORY_EDGE);
-    disc(holder, size - d, 0, d, C_RED, C_RED_EDGE);
-    lv_obj_t *crown = lv_img_create(holder);
-    lv_img_set_src(crown, &img_game_crown);
-    lv_obj_set_pos(crown, size - d + (d - img_game_crown.header.w) / 2,
-                   (d - img_game_crown.header.h) / 2);
-}
-
-const app_t checkers_app = {
-    .name      = "Checkers",
-    .symbol    = LV_SYMBOL_STOP,
-    .color_hex = 0x2E7D32,
-    .create    = checkers_create,
-    .destroy   = checkers_destroy,
-    .draw_icon = checkers_tile_icon,
-};

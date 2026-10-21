@@ -27,10 +27,19 @@ App file (.app) layout, little-endian:
   64  8  tile symbol (UTF-8, e.g. an LVGL symbol), NUL padded
   72  4  tile colour 0xRRGGBB
   76  8  key id: first 8 bytes of SHA-256 of the signer's public key (DER)
-  84  44 reserved, zero
+  84  16 folder on the display ("Games"; empty = Custom Apps), NUL padded
+  100 2  icon width  } 0 = no icon (the tile shows the symbol); at most 64 x 64
+  102 2  icon height }
+  104 4  icon size in bytes (width * height * 3)
+  108 20 reserved, zero
   128    the ELF file
+  then the icon, if any: LVGL TRUE_COLOR_ALPHA pixels for RGB565 (2 bytes of
+         colour, little-endian, then 1 byte of alpha), row by row
   then, if signed: u16 signature length + ECDSA P-256 / SHA-256 signature (DER)
-         over everything before it (header + ELF).
+         over everything before it (header + ELF + icon).
+
+app.json: name, version, symbol, color, and optionally "folder" and "icon" (a
+PNG next to app.json, at most 64 x 64; transparent parts show the tile colour).
 """
 import argparse
 import getpass
@@ -39,6 +48,7 @@ import json
 import os
 import struct
 import sys
+import zlib
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -49,6 +59,8 @@ PRIV_DEFAULT = os.path.join(ROOT, "local-keys", "app_signing_key.pem")
 PUB_DEFAULT = os.path.join(ROOT, "keys", "builtin_app_key.pub")
 MAGIC = b"DASHAPP1"
 HDR = 128
+HDR_FMT = "<8sHHI32s16s8sI8s16sHHI20s"
+ICON_MAX = 64
 
 # Names for the tile symbol (LVGL's built-in symbols; see lv_symbol_def.h).
 SYMBOLS = {
@@ -132,6 +144,67 @@ def cmd_genkey(a):
     print(f"Fingerprint: {fingerprint(key.public_key())}")
 
 
+def read_png(path):
+    """8-bit RGB or RGBA, non-interlaced PNG -> (w, h, list of (r, g, b, a)).
+    Only the standard library, so ESP-IDF's Python can run it."""
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise Fail(f"{path} isn't a PNG file")
+    pos, idat, ihdr = 8, b"", None
+    while pos + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        chunk = data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", chunk)
+        elif kind == b"IDAT":
+            idat += chunk
+        pos += 12 + n
+    if not ihdr:
+        raise Fail(f"{path}: damaged PNG")
+    w, h, depth, ctype, _, _, interlace = ihdr
+    if depth != 8 or ctype not in (2, 6) or interlace:
+        raise Fail(f"{path}: save the icon as an 8-bit RGB or RGBA PNG, not interlaced")
+    bpp = 4 if ctype == 6 else 3
+    raw = zlib.decompress(idat)
+    stride = w * bpp
+    px, prev = [], bytearray(stride)
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            left = line[i - bpp] if i >= bpp else 0
+            up = prev[i]
+            ul = prev[i - bpp] if i >= bpp else 0
+            if f == 1:
+                line[i] = (line[i] + left) & 255
+            elif f == 2:
+                line[i] = (line[i] + up) & 255
+            elif f == 3:
+                line[i] = (line[i] + (left + up) // 2) & 255
+            elif f == 4:
+                p = left + up - ul
+                pa, pb, pc = abs(p - left), abs(p - up), abs(p - ul)
+                pr = left if pa <= pb and pa <= pc else up if pb <= pc else ul
+                line[i] = (line[i] + pr) & 255
+        for x in range(w):
+            q = line[x * bpp:x * bpp + bpp]
+            px.append((q[0], q[1], q[2], q[3] if bpp == 4 else 255))
+        prev = line
+    return w, h, px
+
+
+def icon_pixels(path):
+    """PNG -> (w, h, LVGL RGB565 + alpha bytes)."""
+    w, h, px = read_png(path)
+    if w > ICON_MAX or h > ICON_MAX:
+        raise Fail(f"{path}: the icon is {w} x {h}; at most {ICON_MAX} x {ICON_MAX}")
+    out = bytearray()
+    for r, g, b, al in px:
+        c = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+        out += struct.pack("<HB", c, al)
+    return w, h, bytes(out)
+
+
 def cmd_sign(a):
     elf = open(a.elf, "rb").read()
     if elf[:4] != b"\x7fELF":
@@ -144,15 +217,21 @@ def cmd_sign(a):
         raise Fail(f"unknown symbol '{sym}'; choose one of: {', '.join(sorted(SYMBOLS))}")
     symbol = chr(SYMBOLS[sym]).encode("utf-8")
     color = int(str(meta.get("color", "0x546E7A")), 16)
-    if not 0 < len(name) < 32 or len(version) >= 16:
-        raise Fail("name must be 1-31 characters, version at most 15")
+    folder = meta.get("folder", "").encode("ascii")
+    if not 0 < len(name) < 32 or len(version) >= 16 or len(folder) >= 16:
+        raise Fail("name must be 1-31 characters, version and folder at most 15")
+    iw = ih = 0
+    icon = b""
+    if meta.get("icon"):
+        iw, ih, icon = icon_pixels(os.path.join(os.path.dirname(os.path.abspath(a.meta)),
+                                                meta["icon"]))
 
     key = None if a.unsigned else load_private(a.key)
     kid = key_id(key.public_key()) if key else bytes(8)
-    hdr = struct.pack("<8sHHI32s16s8sI8s44s", MAGIC, HDR, 0 if a.unsigned else 1, len(elf),
-                      name, version, symbol, color, kid, bytes(44))
+    hdr = struct.pack(HDR_FMT, MAGIC, HDR, 0 if a.unsigned else 1, len(elf),
+                      name, version, symbol, color, kid, folder, iw, ih, len(icon), bytes(20))
     assert len(hdr) == HDR
-    body = hdr + elf
+    body = hdr + elf + icon
     if key:
         sig = key.sign(body, ec.ECDSA(hashes.SHA256()))
         body += struct.pack("<H", len(sig)) + sig
@@ -166,16 +245,20 @@ def cmd_info(a):
     data = open(a.app, "rb").read()
     if len(data) < HDR or data[:8] != MAGIC:
         raise Fail("not a dashboard app file")
-    (_, hs, flags, size, name, version, symbol, color, kid, _) = \
-        struct.unpack("<8sHHI32s16s8sI8s44s", data[:HDR])
+    (_, hs, flags, size, name, version, symbol, color, kid, folder, iw, ih, isize, _) = \
+        struct.unpack(HDR_FMT, data[:HDR])
     print(f"name {name.rstrip(b'\0').decode()}  version {version.rstrip(b'\0').decode()}  "
           f"colour #{color:06X}  code {size:,} bytes")
+    if folder.rstrip(b"\0"):
+        print(f"folder {folder.rstrip(b'\0').decode()}")
+    if isize:
+        print(f"icon {iw} x {ih}")
     if not flags & 1:
         print("UNSIGNED (only runs in developer mode, after approval on the display)")
         return
     k = kid.hex().upper()
     print("signer key id", " ".join(k[i:i + 4] for i in range(0, 16, 4)))
-    end = HDR + size
+    end = HDR + size + isize
     (slen,) = struct.unpack("<H", data[end:end + 2])
     sig = data[end + 2:end + 2 + slen]
     pub = load_public(a.key)
@@ -204,7 +287,7 @@ def main():
     g.add_argument("--force", action="store_true")
     s = sub.add_parser("sign", help="wrap (and sign) an app")
     s.add_argument("elf")
-    s.add_argument("meta", help="app.json: name, version, symbol, color")
+    s.add_argument("meta", help="app.json: name, version, symbol, color, folder, icon")
     s.add_argument("-o", "--output", required=True)
     s.add_argument("--key", default=PRIV_DEFAULT)
     s.add_argument("--unsigned", action="store_true", help="for developer mode")
