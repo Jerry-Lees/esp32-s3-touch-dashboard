@@ -7,14 +7,20 @@
  *   checks up / total and the answer time or the problem. Problems first
  *   unless switched off in the menu.
  * - Tap a card for every check: what it tests, state, time, since when.
+ * - Edit (top bar, or a server's page): add, change, reorder and delete
+ *   servers, checks and groups; Save writes monitors.json on the card.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
+#include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "app_framework.h"
+#include "game_common.h"
 #include "launcher.h"
 #include "monitor.h"
 #include "net_time.h"
@@ -170,6 +176,7 @@ static void update_summary(void)
 /* ======================= cards ======================= */
 
 static void open_detail(int host);
+static void edit_open(int host);
 
 static void card_clicked(lv_event_t *e)
 {
@@ -324,6 +331,13 @@ static void detail_close(lv_event_t *e)
     U.detail_host = -1;
 }
 
+static void detail_edit(lv_event_t *e)
+{
+    int host = U.detail_host;
+    detail_close(e);
+    edit_open(host);
+}
+
 static void fill_detail(void)
 {
     lv_obj_clean(U.dbody);
@@ -410,6 +424,8 @@ static void open_detail(int host)
     lv_obj_set_pos(label(U.detail, APP_FONT_LARGE, APP_COLOR_TEXT, name), 20, 12);
     lv_obj_align(button(U.detail, LV_SYMBOL_CLOSE "  Close", 120, 44, C_BUTTON, detail_close, NULL),
                  LV_ALIGN_TOP_RIGHT, -12, 8);
+    lv_obj_align(button(U.detail, LV_SYMBOL_EDIT "  Edit", 110, 44, C_BUTTON, detail_edit, NULL),
+                 LV_ALIGN_TOP_RIGHT, -142, 8);
     U.dbody = lv_obj_create(U.detail);
     lv_obj_remove_style_all(U.dbody);
     lv_obj_set_size(U.dbody, AREA_W - 40, AREA_H - 66);
@@ -472,15 +488,752 @@ static void menu_clicked(lv_event_t *e)
                          C_BUTTON, reload_clicked, NULL);
     lv_obj_set_pos(b, 20, 214);
     lv_obj_t *l = label(o, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT,
-                        "The list is dashboard/monitors.json on the SD card (format in the "
-                        "README; monitor/monitors.example.json in the project). Copy a new one "
+                        "The list is dashboard/monitors.json on the SD card. Change it here with "
+                        LV_SYMBOL_EDIT " (top bar), or on the PC (format in the README) and copy it "
                         "with: tools/sdcard.py put --force monitors.json monitors.json\n"
-                        "It's re-read automatically when it changes. Checks run every minute "
-                        "(\"interval\" in the file); a check is down after two failures in a row.");
+                        "It's re-read automatically when it changes. Saving here keeps the old "
+                        "file as monitors.json.bak. A check is down after two failures in a row.");
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(l, AREA_W - 40);
     lv_obj_set_pos(l, 20, 284);
 }
+
+/* ======================= list editor ======================= */
+/*
+ * Edit servers: changes go to a working copy of the list (E.cfg, PSRAM);
+ * nothing happens until Save, which writes monitors.json via monitor_save().
+ * Main page: groups with their servers (tap one for its form, arrows to
+ * reorder). The server form has name, address, description, group and up
+ * to MON_CHECKS checks. Rebuilds triggered from widgets inside the page
+ * being rebuilt go through lv_async_call.
+ */
+#define KB_H      220
+#define FORM_Y    60
+#define C_SAVE    0x1B8F4A
+#define C_DANGER  0x8E2A2A
+
+static const int s_intervals[] = { 15, 30, 60, 120, 300, 600, 1800, 3600 };
+#define N_INTERVALS ((int)(sizeof(s_intervals) / sizeof(s_intervals[0])))
+
+static mon_host_t s_draft EXT_RAM_BSS_ATTR;    /* the server form's contents */
+
+static struct {
+    mon_cfg_t  *cfg;               /* working copy, NULL = editor closed */
+    bool        dirty;
+    lv_obj_t   *view, *list;
+    lv_obj_t   *form, *fbody, *kb, *focus;
+    int         host;              /* server in the form, -1 = new */
+    lv_obj_t   *ta_name, *ta_addr, *ta_what, *dd_group;
+    lv_obj_t   *ta_arg[MON_CHECKS], *ta_label[MON_CHECKS];
+    lv_obj_t   *ask, *ask_ta;
+    int         ask_group;         /* group being renamed, -1 = new group */
+    int         del_group;
+} E;
+
+static void list_fill(void);
+static void form_fill(void);
+
+static void list_fill_async(void *p) { (void)p; if (E.list) list_fill(); }
+static void form_fill_async(void *p) { (void)p; if (E.fbody) form_fill(); }
+
+/* Copies src without leading/trailing spaces. */
+static void trim_to(char *dst, size_t n, const char *src)
+{
+    while (*src == ' ') src++;
+    size_t l = strlen(src);
+    while (l && src[l - 1] == ' ') l--;
+    if (l >= n) l = n - 1;
+    memcpy(dst, src, l);
+    dst[l] = '\0';
+}
+
+static void style_dd(lv_obj_t *dd)
+{
+    lv_obj_set_style_text_font(dd, APP_FONT_MEDIUM, 0);
+    lv_obj_set_style_bg_color(dd, lv_color_hex(APP_COLOR_PANEL), 0);
+    lv_obj_set_style_text_color(dd, lv_color_hex(APP_COLOR_TEXT), 0);
+    lv_obj_set_style_border_color(dd, lv_color_hex(0x3A4652), 0);
+    lv_obj_t *list = lv_dropdown_get_list(dd);
+    if (list) {
+        lv_obj_set_style_text_font(list, APP_FONT_MEDIUM, 0);
+        lv_obj_set_style_bg_color(list, lv_color_hex(APP_COLOR_PANEL), 0);
+        lv_obj_set_style_text_color(list, lv_color_hex(APP_COLOR_TEXT), 0);
+        lv_obj_set_style_max_height(list, 300, 0);
+    }
+}
+
+static int group_size(int g)
+{
+    int n = 0;
+    for (int i = 0; i < E.cfg->nhosts; i++) n += E.cfg->h[i].group == g;
+    return n;
+}
+
+/* ---------- keyboard (shared by the form and the name prompt) ---------- */
+
+static void kb_hide(void)
+{
+    if (!E.kb) return;
+    lv_obj_add_flag(E.kb, LV_OBJ_FLAG_HIDDEN);
+    if (E.focus) lv_obj_clear_state(E.focus, LV_STATE_FOCUSED);
+    E.focus = NULL;
+    if (E.fbody) lv_obj_set_height(E.fbody, AREA_H - FORM_Y);
+}
+
+static void ta_clicked(lv_event_t *e)
+{
+    lv_obj_t *ta = lv_event_get_target(e);
+    if (E.focus && E.focus != ta) lv_obj_clear_state(E.focus, LV_STATE_FOCUSED);
+    E.focus = ta;
+    lv_obj_add_state(ta, LV_STATE_FOCUSED);
+    lv_keyboard_set_textarea(E.kb, ta);
+    lv_keyboard_set_mode(E.kb, lv_obj_get_user_data(ta) ? LV_KEYBOARD_MODE_NUMBER
+                                                        : LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_clear_flag(E.kb, LV_OBJ_FLAG_HIDDEN);
+    if (E.fbody && lv_obj_get_parent(ta) == E.fbody) {
+        lv_obj_set_height(E.fbody, AREA_H - FORM_Y - KB_H);
+        lv_obj_update_layout(E.fbody);
+        lv_obj_scroll_to_view(ta, LV_ANIM_ON);
+    }
+}
+
+static lv_obj_t *mk_ta(lv_obj_t *p, const char *placeholder, int x, int y, int w, int max,
+                       const char *text)
+{
+    lv_obj_t *ta = lv_textarea_create(p);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_max_length(ta, max);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_textarea_set_text(ta, text);
+    lv_obj_set_style_text_font(ta, APP_FONT_MEDIUM, 0);
+    lv_obj_set_size(ta, w, 46);
+    lv_obj_set_pos(ta, x, y);
+    lv_obj_clear_state(ta, LV_STATE_FOCUSED);
+    lv_obj_add_event_cb(ta, ta_clicked, LV_EVENT_CLICKED, NULL);
+    return ta;
+}
+
+static lv_obj_t *mk_kb(lv_obj_t *p, lv_event_cb_t cb)
+{
+    lv_obj_t *kb = lv_keyboard_create(p);
+    lv_obj_set_size(kb, AREA_W, KB_H);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_event_cb(kb, cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(kb, cb, LV_EVENT_CANCEL, NULL);
+    lv_keyboard_set_textarea(kb, NULL);
+    return kb;
+}
+
+/* ---------- group name prompt ---------- */
+
+static void ask_close(void)
+{
+    if (E.ask) lv_obj_del_async(E.ask);
+    E.ask = E.ask_ta = E.kb = E.focus = NULL;
+}
+
+static void ask_ok(void)
+{
+    char name[sizeof(E.cfg->group[0])];
+    trim_to(name, sizeof(name), lv_textarea_get_text(E.ask_ta));
+    if (!name[0]) {
+        launcher_toast("Type a name for the group.", 2500);
+        return;
+    }
+    for (int g = 0; g < E.cfg->ngroups; g++) {
+        if (g != E.ask_group && !strcasecmp(E.cfg->group[g], name)) {
+            launcher_toast("There's already a group with that name.", 2500);
+            return;
+        }
+    }
+    int g = E.ask_group;
+    if (g < 0) {
+        if (E.cfg->ngroups >= MON_GROUPS) return;
+        g = E.cfg->ngroups++;
+    }
+    memcpy(E.cfg->group[g], name, sizeof(name));
+    E.dirty = true;
+    ask_close();
+    list_fill();
+}
+
+static void ask_kb_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_READY) ask_ok();
+    else ask_close();
+}
+
+static void ask_ok_clicked(lv_event_t *e) { (void)e; ask_ok(); }
+static void ask_cancel_clicked(lv_event_t *e) { (void)e; ask_close(); }
+
+static void ask_open(int group)
+{
+    if (E.ask) return;
+    if (group < 0 && E.cfg->ngroups >= MON_GROUPS) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "The list is full (%d groups).", MON_GROUPS);
+        launcher_toast(msg, 3000);
+        return;
+    }
+    E.ask_group = group;
+    lv_obj_t *o = E.ask = overlay();
+    lv_obj_set_parent(o, E.view);
+    lv_obj_set_pos(label(o, APP_FONT_LARGE, APP_COLOR_TEXT, group < 0 ? "New group" : "Rename group"),
+                   20, 12);
+    lv_obj_align(button(o, LV_SYMBOL_OK "  OK", 110, 44, C_SAVE, ask_ok_clicked, NULL),
+                 LV_ALIGN_TOP_RIGHT, -12, 8);
+    lv_obj_align(button(o, "Cancel", 116, 44, C_BUTTON, ask_cancel_clicked, NULL),
+                 LV_ALIGN_TOP_RIGHT, -134, 8);
+    E.ask_ta = mk_ta(o, "Group name, e.g. Network", 20, 70, AREA_W - 40,
+                     sizeof(E.cfg->group[0]) - 1, group < 0 ? "" : E.cfg->group[group]);
+    E.kb = mk_kb(o, ask_kb_event);
+    lv_event_send(E.ask_ta, LV_EVENT_CLICKED, NULL);
+}
+
+/* ---------- server form ---------- */
+
+/* Copies what's typed into s_draft (no checks yet: that's form_done). */
+static void form_read(void)
+{
+    mon_host_t *d = &s_draft;
+    snprintf(d->name, sizeof(d->name), "%s", lv_textarea_get_text(E.ta_name));
+    snprintf(d->addr, sizeof(d->addr), "%s", lv_textarea_get_text(E.ta_addr));
+    snprintf(d->what, sizeof(d->what), "%s", lv_textarea_get_text(E.ta_what));
+    if (E.dd_group) d->group = lv_dropdown_get_selected(E.dd_group);
+    for (int k = 0; k < d->ncheck; k++) {
+        mon_check_t *c = &d->c[k];
+        if (E.ta_arg[k] && c->kind == MON_TCP) {
+            long p = strtol(lv_textarea_get_text(E.ta_arg[k]), NULL, 10);
+            c->port = p >= 1 && p <= 65535 ? (uint16_t)p : 0;
+        } else if (E.ta_arg[k]) {
+            snprintf(c->url, sizeof(c->url), "%s", lv_textarea_get_text(E.ta_arg[k]));
+        }
+        if (E.ta_label[k]) snprintf(c->label, sizeof(c->label), "%s", lv_textarea_get_text(E.ta_label[k]));
+    }
+}
+
+static void form_close(void)
+{
+    if (E.form) lv_obj_del_async(E.form);
+    E.form = E.fbody = E.kb = E.focus = E.ta_name = E.ta_addr = E.ta_what = E.dd_group = NULL;
+    memset(E.ta_arg, 0, sizeof(E.ta_arg));
+    memset(E.ta_label, 0, sizeof(E.ta_label));
+}
+
+static void kind_changed(lv_event_t *e)
+{
+    int k = (int)(intptr_t)lv_event_get_user_data(e);
+    form_read();
+    mon_check_t *c = &s_draft.c[k];
+    int kind = lv_dropdown_get_selected(lv_event_get_target(e));
+    if (kind == c->kind) return;
+    c->kind = kind;
+    if (kind == MON_HTTP && !c->url[0]) snprintf(c->url, sizeof(c->url), "http://%s/", s_draft.addr);
+    lv_async_call(form_fill_async, NULL);
+}
+
+static void check_remove(lv_event_t *e)
+{
+    int k = (int)(intptr_t)lv_event_get_user_data(e);
+    form_read();
+    mon_host_t *d = &s_draft;
+    memmove(&d->c[k], &d->c[k + 1], (d->ncheck - k - 1) * sizeof(d->c[0]));
+    d->ncheck--;
+    kb_hide();
+    lv_async_call(form_fill_async, NULL);
+}
+
+static void check_add(lv_event_t *e)
+{
+    (void)e;
+    form_read();
+    mon_host_t *d = &s_draft;
+    if (d->ncheck >= MON_CHECKS) return;
+    bool ping = false;
+    for (int k = 0; k < d->ncheck; k++) ping |= d->c[k].kind == MON_PING;
+    mon_check_t *c = &d->c[d->ncheck++];
+    memset(c, 0, sizeof(*c));
+    c->kind = ping ? MON_TCP : MON_PING;        /* a ping first, if there's none */
+    kb_hide();
+    lv_async_call(form_fill_async, NULL);
+}
+
+/* A dialog inside a page that's being closed must not also be deleted on
+ * its own: both deletes are async, the newest runs first, so the dialog's
+ * would then hit freed memory. Deleting the page deletes the dialog too. */
+static void del_host_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    if (!yes || E.host < 0) {
+        game_dialog_close();
+        return;
+    }
+    mon_cfg_t *c = E.cfg;
+    memmove(&c->h[E.host], &c->h[E.host + 1], (c->nhosts - E.host - 1) * sizeof(c->h[0]));
+    c->nhosts--;
+    E.dirty = true;
+    form_close();
+    list_fill();
+}
+
+static void host_delete(lv_event_t *e)
+{
+    (void)e;
+    char t[64];
+    snprintf(t, sizeof(t), "Delete %s?", E.cfg->h[E.host].name);
+    lv_obj_t *row = game_dialog_open(E.form, t);
+    game_dialog_button(row, LV_SYMBOL_TRASH "  Delete", del_host_answer, (void *)1);
+    game_dialog_button(row, "Cancel", del_host_answer, NULL);
+}
+
+static void form_done(lv_event_t *e)
+{
+    (void)e;
+    form_read();
+    mon_host_t *d = &s_draft;
+    char msg[96] = "";
+    trim_to(d->name, sizeof(d->name), d->name);
+    trim_to(d->addr, sizeof(d->addr), d->addr);
+    trim_to(d->what, sizeof(d->what), d->what);
+    if (!d->name[0]) snprintf(msg, sizeof(msg), "Give the server a name.");
+    else if (!d->addr[0] || strchr(d->addr, ' '))
+        snprintf(msg, sizeof(msg), "Type the address: an IP address or host name, no spaces.");
+    else if (!d->ncheck) snprintf(msg, sizeof(msg), "Add at least one check.");
+    for (int k = 0; k < d->ncheck && !msg[0]; k++) {
+        mon_check_t *c = &d->c[k];
+        trim_to(c->label, sizeof(c->label), c->label);
+        trim_to(c->url, sizeof(c->url), c->url);
+        if (c->kind == MON_PING) {
+            snprintf(c->label, sizeof(c->label), "Ping");
+            c->port = 0;
+            c->url[0] = '\0';
+        } else if (c->kind == MON_TCP) {
+            c->url[0] = '\0';
+            if (!c->port) snprintf(msg, sizeof(msg), "Check %d: the port must be 1 to 65535.", k + 1);
+        } else {
+            c->port = 0;
+            bool scheme = !strncmp(c->url, "http://", 7) || !strncmp(c->url, "https://", 8);
+            if (!scheme || strchr(c->url, ' ') || strlen(c->url) < 10) {
+                snprintf(msg, sizeof(msg), "Check %d: the web address must start with http:// "
+                         "or https://, no spaces.", k + 1);
+            }
+        }
+    }
+    if (msg[0]) {
+        launcher_toast(msg, 3500);
+        return;
+    }
+    mon_cfg_t *c = E.cfg;
+    if (E.host >= 0 && c->h[E.host].group != d->group) {
+        /* Another group: it goes to the end of that one. */
+        memmove(&c->h[E.host], &c->h[E.host + 1], (c->nhosts - E.host - 1) * sizeof(c->h[0]));
+        c->nhosts--;
+        E.host = -1;
+    }
+    if (E.host < 0) {
+        if (c->nhosts >= MON_HOSTS) return;
+        E.host = c->nhosts++;
+    }
+    c->h[E.host] = *d;
+    E.dirty = true;
+    form_close();
+    list_fill();
+}
+
+static void form_cancel(lv_event_t *e) { (void)e; form_close(); }
+
+static void form_kb_event(lv_event_t *e) { (void)e; kb_hide(); }
+
+static void form_fill(void)
+{
+    mon_host_t *d = &s_draft;
+    lv_obj_clean(E.fbody);
+    E.focus = NULL;
+    memset(E.ta_arg, 0, sizeof(E.ta_arg));
+    memset(E.ta_label, 0, sizeof(E.ta_label));
+    lv_obj_t *p = E.fbody;
+    static const char *names[] = { "Name", "Address", "Description", "Group" };
+    for (int r = 0; r < 4; r++) {
+        lv_obj_t *l = label(p, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT, names[r]);
+        lv_obj_set_pos(l, 0, r * 56 + 12);
+    }
+    E.ta_name = mk_ta(p, "Short name, e.g. router", 150, 0, 610, MON_NAME - 1, d->name);
+    E.ta_addr = mk_ta(p, "IP address or host name, e.g. 192.168.1.1", 150, 56, 610,
+                      sizeof(d->addr) - 1, d->addr);
+    E.ta_what = mk_ta(p, "Optional, e.g. Home router", 150, 112, 610, sizeof(d->what) - 1, d->what);
+
+    char opts[MON_GROUPS * 26] = "";
+    for (int g = 0; g < E.cfg->ngroups; g++) {
+        size_t l = strlen(opts);
+        snprintf(opts + l, sizeof(opts) - l, "%s%s", g ? "\n" : "", E.cfg->group[g]);
+    }
+    E.dd_group = lv_dropdown_create(p);
+    lv_dropdown_set_options(E.dd_group, opts);
+    lv_dropdown_set_selected(E.dd_group, d->group);
+    lv_obj_set_pos(E.dd_group, 150, 168);
+    lv_obj_set_width(E.dd_group, 320);
+    style_dd(E.dd_group);
+
+    lv_obj_t *l = label(p, APP_FONT_LARGE, APP_COLOR_TEXT, "Checks");
+    lv_obj_set_pos(l, 0, 236);
+    if (d->ncheck < MON_CHECKS) {
+        lv_obj_set_pos(button(p, LV_SYMBOL_PLUS "  Add a check", 190, 42, C_BUTTON, check_add, NULL),
+                       150, 230);
+    }
+    l = label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT,
+              "Ping: answers ping   TCP: the port\naccepts connections   Web: answers HTTP");
+    lv_obj_set_pos(l, 360, 234);
+
+    int y = 288;
+    for (int k = 0; k < d->ncheck; k++, y += 56) {
+        mon_check_t *c = &d->c[k];
+        lv_obj_t *dd = lv_dropdown_create(p);
+        lv_dropdown_set_options(dd, "Ping\nTCP\nWeb");
+        lv_dropdown_set_selected(dd, c->kind);
+        lv_obj_set_pos(dd, 0, y);
+        lv_obj_set_width(dd, 120);
+        style_dd(dd);
+        lv_obj_add_event_cb(dd, kind_changed, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)k);
+        if (c->kind == MON_PING) {
+            l = label(p, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT, "Ping (ICMP echo)");
+            lv_obj_set_pos(l, 136, y + 12);
+        } else if (c->kind == MON_TCP) {
+            char port[8] = "";
+            if (c->port) snprintf(port, sizeof(port), "%u", c->port);
+            E.ta_arg[k] = mk_ta(p, "Port", 130, y, 120, 5, port);
+            lv_textarea_set_accepted_chars(E.ta_arg[k], "0123456789");
+            lv_obj_set_user_data(E.ta_arg[k], (void *)1);      /* number keyboard */
+            E.ta_label[k] = mk_ta(p, "Label, e.g. SSH (optional)", 260, y, 430,
+                                  sizeof(c->label) - 1, c->label);
+        } else {
+            E.ta_arg[k] = mk_ta(p, "http://...", 130, y, 400, sizeof(c->url) - 1, c->url);
+            E.ta_label[k] = mk_ta(p, "Label", 540, y, 150, sizeof(c->label) - 1, c->label);
+        }
+        lv_obj_set_pos(button(p, LV_SYMBOL_CLOSE, 56, 46, C_DANGER, check_remove, (void *)(intptr_t)k),
+                       704, y);
+    }
+    if (E.host >= 0) {
+        lv_obj_set_pos(button(p, LV_SYMBOL_TRASH "  Delete this server", 280, 46, C_DANGER,
+                              host_delete, NULL), 0, y + 14);
+        y += 60;
+    }
+    /* Room to scroll the last row above the keyboard. */
+    lv_obj_t *pad = lv_obj_create(p);
+    lv_obj_remove_style_all(pad);
+    lv_obj_set_size(pad, 10, 20);
+    lv_obj_set_pos(pad, 0, y + 10);
+    lv_obj_clear_flag(pad, LV_OBJ_FLAG_CLICKABLE);
+}
+
+static void form_open(int host, int group)
+{
+    if (E.form) return;
+    if (host < 0 && E.cfg->nhosts >= MON_HOSTS) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "The list is full (%d servers).", MON_HOSTS);
+        launcher_toast(msg, 3000);
+        return;
+    }
+    E.host = host;
+    if (host >= 0) {
+        s_draft = E.cfg->h[host];
+    } else {
+        memset(&s_draft, 0, sizeof(s_draft));
+        s_draft.group = group;
+        s_draft.ncheck = 1;
+        s_draft.c[0].kind = MON_PING;
+    }
+    lv_obj_t *o = E.form = overlay();
+    lv_obj_set_parent(o, E.view);
+    lv_obj_set_pos(label(o, APP_FONT_LARGE, APP_COLOR_TEXT, host < 0 ? "New server" : "Edit server"),
+                   20, 12);
+    lv_obj_align(button(o, LV_SYMBOL_OK "  Done", 120, 44, C_SAVE, form_done, NULL),
+                 LV_ALIGN_TOP_RIGHT, -12, 8);
+    lv_obj_align(button(o, "Cancel", 116, 44, C_BUTTON, form_cancel, NULL),
+                 LV_ALIGN_TOP_RIGHT, -144, 8);
+    E.fbody = lv_obj_create(o);
+    lv_obj_remove_style_all(E.fbody);
+    lv_obj_set_size(E.fbody, AREA_W - 20, AREA_H - FORM_Y);
+    lv_obj_set_pos(E.fbody, 20, FORM_Y);
+    lv_obj_set_scroll_dir(E.fbody, LV_DIR_VER);
+    E.kb = mk_kb(o, form_kb_event);
+    lv_obj_add_flag(E.kb, LV_OBJ_FLAG_HIDDEN);
+    form_fill();
+}
+
+/* ---------- main editor page ---------- */
+
+static void edit_close(void)
+{
+    if (E.view) lv_obj_del_async(E.view);
+    free(E.cfg);
+    memset(&E, 0, sizeof(E));
+}
+
+static void host_clicked(lv_event_t *e)
+{
+    form_open((int)(intptr_t)lv_event_get_user_data(e), 0);
+}
+
+/* Swaps server i with the one before (dir -1) or after (+1) it in its group. */
+static void host_move(int i, int dir)
+{
+    mon_cfg_t *c = E.cfg;
+    for (int j = i + dir; j >= 0 && j < c->nhosts; j += dir) {
+        if (c->h[j].group != c->h[i].group) continue;
+        mon_host_t t = c->h[i];
+        c->h[i] = c->h[j];
+        c->h[j] = t;
+        E.dirty = true;
+        lv_async_call(list_fill_async, NULL);
+        return;
+    }
+}
+
+static void host_up(lv_event_t *e)   { host_move((int)(intptr_t)lv_event_get_user_data(e), -1); }
+static void host_down(lv_event_t *e) { host_move((int)(intptr_t)lv_event_get_user_data(e), 1); }
+
+static void group_move(int g, int dir)
+{
+    mon_cfg_t *c = E.cfg;
+    int o = g + dir;
+    if (o < 0 || o >= c->ngroups) return;
+    char t[sizeof(c->group[0])];
+    memcpy(t, c->group[g], sizeof(t));
+    memcpy(c->group[g], c->group[o], sizeof(t));
+    memcpy(c->group[o], t, sizeof(t));
+    for (int i = 0; i < c->nhosts; i++) {
+        if (c->h[i].group == g) c->h[i].group = o;
+        else if (c->h[i].group == o) c->h[i].group = g;
+    }
+    E.dirty = true;
+    lv_async_call(list_fill_async, NULL);
+}
+
+static void group_up(lv_event_t *e)   { group_move((int)(intptr_t)lv_event_get_user_data(e), -1); }
+static void group_down(lv_event_t *e) { group_move((int)(intptr_t)lv_event_get_user_data(e), 1); }
+
+static void group_remove(int g)
+{
+    mon_cfg_t *c = E.cfg;
+    int n = 0;
+    for (int i = 0; i < c->nhosts; i++) {
+        if (c->h[i].group == g) continue;
+        c->h[n] = c->h[i];
+        if (c->h[n].group > g) c->h[n].group--;
+        n++;
+    }
+    c->nhosts = n;
+    memmove(c->group[g], c->group[g + 1], (c->ngroups - g - 1) * sizeof(c->group[0]));
+    c->ngroups--;
+    E.dirty = true;
+    lv_async_call(list_fill_async, NULL);
+}
+
+static void del_group_answer(lv_event_t *e)
+{
+    bool yes = lv_event_get_user_data(e) != NULL;
+    game_dialog_close();
+    if (yes) group_remove(E.del_group);
+}
+
+static void group_delete(lv_event_t *e)
+{
+    int g = (int)(intptr_t)lv_event_get_user_data(e);
+    int n = group_size(g);
+    if (!n) {
+        group_remove(g);
+        return;
+    }
+    E.del_group = g;
+    char t[96];
+    snprintf(t, sizeof(t), "Delete %s and its %d server%s?", E.cfg->group[g], n, n == 1 ? "" : "s");
+    lv_obj_t *row = game_dialog_open(E.view, t);
+    game_dialog_button(row, LV_SYMBOL_TRASH "  Delete", del_group_answer, (void *)1);
+    game_dialog_button(row, "Cancel", del_group_answer, NULL);
+}
+
+static void group_rename(lv_event_t *e) { ask_open((int)(intptr_t)lv_event_get_user_data(e)); }
+static void group_add(lv_event_t *e)    { (void)e; ask_open(-1); }
+static void host_add(lv_event_t *e)     { form_open(-1, (int)(intptr_t)lv_event_get_user_data(e)); }
+
+static lv_obj_t *row_box(int h)
+{
+    lv_obj_t *r = lv_obj_create(E.list);
+    lv_obj_remove_style_all(r);
+    lv_obj_set_size(r, AREA_W - 40, h);
+    lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    return r;
+}
+
+static void list_fill(void)
+{
+    lv_coord_t sy = lv_obj_get_scroll_y(E.list);
+    lv_obj_clean(E.list);
+    mon_cfg_t *c = E.cfg;
+    if (!c->ngroups) {
+        lv_obj_t *l = label(E.list, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT,
+                            "No groups yet. Tap \"New group\" to start (e.g. Network or Servers).");
+        lv_obj_set_style_pad_top(l, 30, 0);
+    }
+    for (int g = 0; g < c->ngroups; g++) {
+        void *ug = (void *)(intptr_t)g;
+        lv_obj_t *r = row_box(48);
+        lv_obj_t *l = label(r, APP_FONT_LARGE, C_ACCENT, c->group[g]);
+        one_line(l, 300);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_t *b = button(r, LV_SYMBOL_TRASH, 52, 42, C_DANGER, group_delete, ug);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, 0, 0);
+        b = button(r, LV_SYMBOL_DOWN, 52, 42, C_BUTTON, group_down, ug);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, -60, 0);
+        b = button(r, LV_SYMBOL_UP, 52, 42, C_BUTTON, group_up, ug);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, -120, 0);
+        b = button(r, LV_SYMBOL_EDIT "  Rename", 120, 42, C_BUTTON, group_rename, ug);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, -180, 0);
+        b = button(r, LV_SYMBOL_PLUS "  Server", 120, 42, C_BUTTON, host_add, ug);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, -308, 0);
+
+        for (int i = 0; i < c->nhosts; i++) {
+            const mon_host_t *h = &c->h[i];
+            if (h->group != g) continue;
+            void *ui = (void *)(intptr_t)i;
+            r = row_box(60);
+            lv_obj_set_style_radius(r, 10, 0);
+            lv_obj_set_style_bg_color(r, lv_color_hex(C_PANEL), 0);
+            lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(r, lv_color_hex(0x2A3540), LV_STATE_PRESSED);
+            lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(r, host_clicked, LV_EVENT_CLICKED, ui);
+            l = label(r, APP_FONT_MEDIUM, APP_COLOR_TEXT, h->name);
+            one_line(l, 580);
+            lv_obj_set_pos(l, 14, 6);
+            char sub[200];
+            int n = snprintf(sub, sizeof(sub), "%s", h->addr);
+            if (h->what[0]) n += snprintf(sub + n, sizeof(sub) - n, "   " LV_SYMBOL_BULLET "   %s", h->what);
+            for (int k = 0; k < h->ncheck && n < (int)sizeof(sub); k++) {
+                const mon_check_t *ck = &h->c[k];
+                char port[16];
+                snprintf(port, sizeof(port), "port %u", ck->port);
+                n += snprintf(sub + n, sizeof(sub) - n, "%s%s", k ? ", " : "   " LV_SYMBOL_BULLET "   ",
+                              ck->label[0] ? ck->label : ck->kind == MON_HTTP ? "Web" : port);
+            }
+            l = label(r, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, sub);
+            one_line(l, 580);
+            lv_obj_set_pos(l, 14, 34);
+            b = button(r, LV_SYMBOL_DOWN, 52, 44, C_BUTTON, host_down, ui);
+            lv_obj_align(b, LV_ALIGN_RIGHT_MID, -8, 0);
+            b = button(r, LV_SYMBOL_UP, 52, 44, C_BUTTON, host_up, ui);
+            lv_obj_align(b, LV_ALIGN_RIGHT_MID, -68, 0);
+        }
+        if (!group_size(g)) {
+            l = label(E.list, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, "No servers in this group yet.");
+            lv_obj_set_style_pad_left(l, 14, 0);
+        }
+    }
+    lv_obj_update_layout(E.list);
+    lv_obj_scroll_to_y(E.list, sy, LV_ANIM_OFF);
+}
+
+static void interval_changed(lv_event_t *e)
+{
+    int i = lv_dropdown_get_selected(lv_event_get_target(e));
+    if (i < N_INTERVALS) {
+        E.cfg->interval = s_intervals[i];
+        E.dirty = true;
+    }
+}
+
+static void save_clicked(lv_event_t *e)
+{
+    (void)e;
+    char why[96];
+    if (!monitor_save(E.cfg, why, sizeof(why))) {
+        launcher_toast(why, 4000);
+        return;
+    }
+    launcher_toast("Saved to the SD card (the old list is kept as monitors.json.bak). "
+                   "The new list starts after the current round of checks.", 4000);
+    edit_close();
+}
+
+static void discard_answer(lv_event_t *e)
+{
+    if (lv_event_get_user_data(e)) edit_close();    /* deletes the dialog too */
+    else game_dialog_close();
+}
+
+static void cancel_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (!E.dirty) {
+        edit_close();
+        return;
+    }
+    lv_obj_t *row = game_dialog_open(E.view, "Throw away your changes?");
+    game_dialog_button(row, "Throw away", discard_answer, (void *)1);
+    game_dialog_button(row, "Keep editing", discard_answer, NULL);
+}
+
+/* host >= 0: also open that server's form. */
+static void edit_open(int host)
+{
+    if (E.cfg) return;
+    if (monitor_save_pending()) {
+        launcher_toast("Still loading the last saved list; try again in a few seconds.", 3000);
+        return;
+    }
+    E.cfg = heap_caps_malloc(sizeof(mon_cfg_t), MALLOC_CAP_SPIRAM);
+    if (!E.cfg) {
+        launcher_toast("Not enough memory.", 2500);
+        return;
+    }
+    monitor_lock();
+    memcpy(E.cfg, monitor_cfg(), sizeof(mon_cfg_t));
+    monitor_unlock();
+    mon_cfg_t *c = E.cfg;
+    if (!c->interval) c->interval = 60;
+    if (!c->ngroups) snprintf(c->group[c->ngroups++], sizeof(c->group[0]), "Servers");
+
+    lv_obj_t *o = E.view = overlay();
+    lv_obj_set_pos(label(o, APP_FONT_LARGE, APP_COLOR_TEXT, "Edit servers"), 20, 12);
+    lv_obj_align(button(o, LV_SYMBOL_SAVE "  Save", 120, 44, C_SAVE, save_clicked, NULL),
+                 LV_ALIGN_TOP_RIGHT, -12, 8);
+    lv_obj_align(button(o, "Cancel", 116, 44, C_BUTTON, cancel_clicked, NULL),
+                 LV_ALIGN_TOP_RIGHT, -144, 8);
+
+    lv_obj_set_pos(button(o, LV_SYMBOL_PLUS "  New group", 170, 42, C_BUTTON, group_add, NULL), 20, 62);
+    lv_obj_t *l = label(o, APP_FONT_MEDIUM, APP_COLOR_SUBTEXT, "Check every");
+    lv_obj_set_pos(l, 214, 72);
+    char opts[160] = "15 s\n30 s\n1 min\n2 min\n5 min\n10 min\n30 min\n1 hour";
+    int sel = -1;
+    for (int i = 0; i < N_INTERVALS; i++) if (s_intervals[i] == c->interval) sel = i;
+    if (sel < 0) {                                 /* a value typed into the file */
+        size_t n = strlen(opts);
+        snprintf(opts + n, sizeof(opts) - n, "\n%d s", c->interval);
+        sel = N_INTERVALS;
+    }
+    lv_obj_t *dd = lv_dropdown_create(o);
+    lv_dropdown_set_options(dd, opts);
+    lv_dropdown_set_selected(dd, sel);
+    lv_obj_set_pos(dd, 340, 62);
+    lv_obj_set_width(dd, 150);
+    style_dd(dd);
+    lv_obj_add_event_cb(dd, interval_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+    E.list = lv_obj_create(o);
+    lv_obj_remove_style_all(E.list);
+    lv_obj_set_size(E.list, AREA_W, AREA_H - 114);
+    lv_obj_set_pos(E.list, 0, 114);
+    lv_obj_set_flex_flow(E.list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_hor(E.list, 20, 0);
+    lv_obj_set_style_pad_bottom(E.list, 12, 0);
+    lv_obj_set_style_pad_row(E.list, 8, 0);
+    lv_obj_set_scroll_dir(E.list, LV_DIR_VER);
+    list_fill();
+    if (host >= 0 && host < c->nhosts) form_open(host, 0);
+}
+
+static void edit_clicked(lv_event_t *e) { (void)e; edit_open(-1); }
 
 /* ======================= app ======================= */
 
@@ -526,9 +1279,11 @@ static void monitor_create(lv_obj_t *parent)
     U.summary = label(parent, APP_FONT_MEDIUM, APP_COLOR_TEXT, "");
     lv_label_set_recolor(U.summary, true);
     lv_label_set_long_mode(U.summary, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(U.summary, 560);
+    lv_obj_set_width(U.summary, 500);
     lv_obj_align(U.summary, LV_ALIGN_TOP_LEFT, 16, 14);
     lv_obj_align(button(parent, LV_SYMBOL_REFRESH "  Check", 130, 40, C_BUTTON, check_now, NULL),
+                 LV_ALIGN_TOP_RIGHT, -142, 5);
+    lv_obj_align(button(parent, LV_SYMBOL_EDIT, 56, 40, C_BUTTON, edit_clicked, NULL),
                  LV_ALIGN_TOP_RIGHT, -76, 5);
     lv_obj_align(button(parent, LV_SYMBOL_BARS, 56, 40, C_BUTTON, menu_clicked, NULL),
                  LV_ALIGN_TOP_RIGHT, -10, 5);
@@ -564,6 +1319,8 @@ static void monitor_create(lv_obj_t *parent)
 static void monitor_destroy(void)
 {
     if (U.timer) lv_timer_del(U.timer);
+    free(E.cfg);                                 /* unsaved edits are dropped */
+    memset(&E, 0, sizeof(E));
     memset(&U, 0, sizeof(U));                    /* the launcher deletes the objects */
 }
 

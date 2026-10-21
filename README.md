@@ -292,7 +292,7 @@ Watches the machines on your network: ping, TCP ports and web pages, every minut
 
 - One card per server: green when all its checks pass, amber when some fail, red when all fail,
   grey until it's been checked. Problems are listed first (switch it off in the menu).
-- Tabs for each group in the list. **Check** runs the checks at once.
+- Tabs for each group in the list. **Check** runs the checks at once; the pencil edits the list.
 - Tap a card for each check: what it tests, up or down, the answer time or why it failed, and
   since when.
 - A check only counts as down after **two failures in a row**, so a single lost packet doesn't
@@ -301,8 +301,22 @@ Watches the machines on your network: ping, TCP ports and web pages, every minut
   down), and a pop-up when a server goes down or comes back.
 - Checks keep running while the app is closed (for the ticker and the pop-ups).
 
-**The list** is a JSON file on the SD card, `dashboard/monitors.json`. It's re-read whenever it
-changes, so editing it on the PC and copying it over is enough:
+**Editing the list on the display:** tap the pencil in the top bar (or **Edit** on a server's
+page).
+
+- Groups: **New group**, and on each group **+ Server**, **Rename**, ▲ ▼ to reorder and the bin
+  to delete it (it asks first if the group isn't empty).
+- Servers: tap one to edit its name, address, description and group, and its checks (up to 4:
+  Ping, TCP port, or Web address); ▲ ▼ reorder them, and the form has **Delete this server**.
+- **Check every** sets how often the checks run (15 s to 1 hour).
+- Nothing changes until **Save**, which writes `dashboard/monitors.json` on the card and keeps
+  the previous file as `monitors.json.bak`. The new list starts after the current round of
+  checks. Leaving the app without saving drops the changes.
+- After editing on the display, the card has the newest copy. Fetch it to the PC with
+  `tools/sdcard.py get monitors.json monitor/monitors.json`.
+
+**The list** is a JSON file on the SD card, `dashboard/monitors.json`. You can also write it on
+the PC: it's re-read whenever it changes, so copying it over is enough:
 
 ```bash
 ~/.espressif/python_env/idf5.5_py3.14_env/bin/python tools/sdcard.py put --force my-servers.json monitors.json

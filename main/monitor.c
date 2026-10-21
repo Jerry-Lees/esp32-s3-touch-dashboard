@@ -35,6 +35,8 @@
 static const char *TAG = "monitor";
 
 #define FILE_PATH    SD_DIR "/monitors.json"
+#define FILE_TMP     FILE_PATH ".tmp"
+#define FILE_BAK     FILE_PATH ".bak"
 #define FILE_MAX     (64 * 1024)
 #define MON_WORKERS  3
 #define PING_MS      1500
@@ -51,6 +53,7 @@ static TaskHandle_t s_coord, s_work[MON_WORKERS];
 static SemaphoreHandle_t s_done;
 static int          s_next;                /* __atomic: next host to check */
 static bool         s_reload;              /* __atomic */
+static bool         s_save_pending;        /* __atomic */
 static char         s_alert[ALERTS][96];
 static int          s_alert_r, s_alert_w;
 static bool         s_opt_tk = true, s_opt_pop = true, s_opt_sort = true;
@@ -263,8 +266,8 @@ static bool load_list(bool force)
             monitor_unlock();
         }
         s_size = -1;
-        set_problem("No server list yet: copy monitors.json to the card's dashboard/ folder "
-                    "(see the README).");
+        set_problem("No server list yet: tap " LV_SYMBOL_EDIT " to add servers, or copy "
+                    "monitors.json to the card's dashboard/ folder (see the README).");
         return false;
     }
     if (!force && st.st_mtime == s_mtime && st.st_size == s_size) return s_cfg->nhosts > 0;
@@ -298,6 +301,91 @@ static bool load_list(bool force)
     free(nw);
     return ok || s_cfg->nhosts > 0;
 }
+
+/* JSON string with the needed escapes (the on-screen keyboard only types
+ * ASCII, but a file from the PC may hold anything). */
+static void put_str(FILE *f, const char *s)
+{
+    fputc('"', f);
+    for (; *s; s++) {
+        unsigned char ch = *s;
+        if (ch == '"' || ch == '\\') fprintf(f, "\\%c", ch);
+        else if (ch < 0x20) fprintf(f, "\\u%04x", ch);
+        else fputc(ch, f);
+    }
+    fputc('"', f);
+}
+
+/* The check as parse_check() reads it. */
+static void check_text(char *out, size_t len, const mon_check_t *c)
+{
+    if (c->kind == MON_PING) snprintf(out, len, "ping");
+    else if (c->kind == MON_TCP) snprintf(out, len, "tcp %u%s%s", c->port, c->label[0] ? " " : "", c->label);
+    else snprintf(out, len, "http %s%s%s", c->url, c->label[0] ? " " : "", c->label);
+}
+
+bool monitor_save(const mon_cfg_t *cfg, char *why, size_t wl)
+{
+    if (!sd_card_mounted()) {
+        snprintf(why, wl, "No SD card.");
+        return false;
+    }
+    FILE *f = fopen(FILE_TMP, "w");
+    if (!f) {
+        snprintf(why, wl, "Couldn't create a file on the SD card.");
+        return false;
+    }
+    /* Same layout as monitor/monitors.example.json. */
+    fprintf(f, "{\n \"format\": \"dashboard-monitor\",\n \"version\": 1,\n \"interval\": %d,\n"
+            " \"groups\": [", cfg->interval ? cfg->interval : 60);
+    for (int g = 0; g < cfg->ngroups; g++) {
+        fprintf(f, "%s\n  {\n   \"name\": ", g ? "," : "");
+        put_str(f, cfg->group[g]);
+        fprintf(f, ",\n   \"hosts\": [");
+        bool first = true;
+        for (int i = 0; i < cfg->nhosts; i++) {
+            const mon_host_t *h = &cfg->h[i];
+            if (h->group != g) continue;
+            fprintf(f, "%s\n    {\n     \"name\": ", first ? "" : ",");
+            first = false;
+            put_str(f, h->name);
+            fprintf(f, ",\n     \"host\": ");
+            put_str(f, h->addr);
+            fprintf(f, ",\n     \"what\": ");
+            put_str(f, h->what);
+            fprintf(f, ",\n     \"checks\": [");
+            for (int k = 0; k < h->ncheck; k++) {
+                char t[200];
+                check_text(t, sizeof(t), &h->c[k]);
+                fprintf(f, "%s\n      ", k ? "," : "");
+                put_str(f, t);
+            }
+            fprintf(f, "\n     ]\n    }");
+        }
+        fprintf(f, "%s]\n  }", first ? "" : "\n   ");
+    }
+    fprintf(f, "\n ]\n}\n");
+    bool ok = !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        unlink(FILE_TMP);
+        snprintf(why, wl, "Couldn't write to the SD card (full?).");
+        return false;
+    }
+    /* FAT can't rename over a file: old -> .bak, then .tmp -> the list. */
+    unlink(FILE_BAK);
+    rename(FILE_PATH, FILE_BAK);
+    if (rename(FILE_TMP, FILE_PATH) != 0) {
+        snprintf(why, wl, "Couldn't rename monitors.json.tmp on the SD card.");
+        return false;
+    }
+    ESP_LOGI(TAG, "Saved %d hosts in %d groups", cfg->nhosts, cfg->ngroups);
+    __atomic_store_n(&s_save_pending, true, __ATOMIC_RELEASE);
+    monitor_reload();
+    return true;
+}
+
+bool monitor_save_pending(void) { return __atomic_load_n(&s_save_pending, __ATOMIC_ACQUIRE); }
 
 /* ======================= checks ======================= */
 
@@ -548,7 +636,9 @@ static void coordinator(void *arg)
     for (;;) {
         bool force = __atomic_exchange_n(&s_reload, false, __ATOMIC_ACQ_REL);
         s_new_list = false;
+        bool pending = __atomic_load_n(&s_save_pending, __ATOMIC_ACQUIRE);
         bool usable = load_list(force);
+        if (pending && force) __atomic_store_n(&s_save_pending, false, __ATOMIC_RELEASE);
         bool first = s_new_list;                    /* new list: no alerts this round */
         if (first) memset(s_prev, 0, sizeof(s_prev));
         int interval = s_cfg->interval ? s_cfg->interval : 60;

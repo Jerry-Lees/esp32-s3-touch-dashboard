@@ -86,6 +86,15 @@ uint32_t monitor_last_round(void);
 void monitor_kick(void);
 void monitor_reload(void);
 
+/* LVGL task (SD card only, no flash): writes cfg as the new monitors.json
+ * (via monitors.json.tmp; the old file is kept as monitors.json.bak) and
+ * reloads it. Only the list is written (names, addresses, checks, interval),
+ * no results. False with a reason if the card couldn't be written. */
+bool monitor_save(const mon_cfg_t *cfg, char *why, size_t wl);
+/* True from monitor_save() until the coordinator has read the new file
+ * (it only swaps lists between rounds, so this can take a few seconds). */
+bool monitor_save_pending(void);
+
 /* LVGL side (launcher's notice timer): the next "went down" / "back up"
  * message, if pop-ups are on. */
 bool monitor_take_alert(char *msg, size_t len);
