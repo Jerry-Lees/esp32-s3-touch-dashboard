@@ -349,8 +349,10 @@ Apps can be loaded from the SD card without rebuilding the firmware. They live i
 Apps** folder (the elf on a shelf) and are loaded into memory when opened, then unloaded when you
 leave. The example is a 1970s-style **Analog Clock** with a sweeping second hand.
 
-- Copy a `.app` file into `dashboard/apps` (or use `tools/sdcard.py put my.app apps/`) and
-  restart. Updated versions of an app run the next time it's opened.
+- Copy a `.app` file into `dashboard/apps` and restart, or use `tools/sdcard.py put my.app
+  apps/`, which shows the tile straight away. Updated versions of an app run the next time it's
+  opened. An app can have its own picture for its tile and can ask for a folder (the games go in
+  **Games**).
 - **Only trusted apps run.** An app has full access to the display, so it must be signed with a
   trusted key (ECDSA P-256). Every `.pub` file in the project's `keys/` folder is built into the
   firmware and always trusted (here `keys/builtin_app_key.pub`, whose private half is in the
@@ -372,7 +374,8 @@ leave. The example is a 1970s-style **Analog Clock** with a sweeping second hand
 
 Making apps: see [apps/README.md](apps/README.md). In short, `tools/build_app.sh apps/my_app`
 builds and signs one. Apps use LVGL and a small dashboard API
-(`sdk/dashboard_sdk/include/dashboard_app.h`).
+(`sdk/dashboard_sdk/include/dashboard_app.h`): messages, the clock, saved numbers, memory that
+stays while the app is closed, and the game kit the games use.
 
 ### Games
 
@@ -387,9 +390,27 @@ builds and signs one. Apps use LVGL and a small dashboard API
 | ![2048](docs/screenshots/2048.png) | |
 | **2048**: swipe to slide and merge tiles, with slide and pop animations. | |
 
+The games are **SD card apps** (`apps/chess`, `apps/checkers`, `apps/flappy`, `apps/snake`,
+`apps/2048`), so they don't take up firmware space and can be updated without reflashing. Build
+and copy them to the card once (the Games folder appears when they're there):
+
+```bash
+PY=~/.espressif/python_env/idf5.5_py3.14_env/bin/python
+for g in chess checkers flappy snake 2048; do
+    tools/build_app.sh apps/$g && $PY tools/sdcard.py put build/apps/$g.app apps/
+done
+```
+
 The computer's chess and checkers moves are worked out in a background task, so the screen
-stays responsive. Games keep their state when you leave and come back, and best scores are
-saved in flash.
+stays responsive. Games keep their state when you leave and come back (until a restart), and
+best scores and levels are saved (and included in settings backups).
+
+### Choosing which apps are built in
+
+`idf.py menuconfig` > **Dashboard apps** has a switch for each optional app (World Clock,
+Timers, Weather, St0nks, Photos, Files, Jellyfin, DashPad, Servers). Switch off what you don't
+use and rebuild; a firmware with all of them off is about 1.6 MB instead of 1.9 MB. Settings,
+the launcher, SD card apps and the game kit are always built in.
 
 ### Settings
 
@@ -657,8 +678,9 @@ test/host/json_skip/run.sh
 | Path | What's there |
 |---|---|
 | `main/launcher.c` | Home screen, folders, app screens, screen timeout |
-| `main/app_*.c` | One file per app |
-| `main/chess_engine.c`, `main/checkers_engine.c` | Game engines (plain C, no LVGL; tests in `test/host/` run on a PC) |
+| `main/app_*.c` | One file per built-in app (optional ones are switched in `main/Kconfig.projbuild`) |
+| `apps/chess`, `apps/checkers`, `apps/flappy`, `apps/snake`, `apps/2048` | The games (SD card apps); the chess and checkers engines are plain C, tested on a PC in `test/host/` |
+| `main/game_common.c` | The game kit (board widget, background worker, dialogs, swipe input), also used by apps |
 | `main/ticker.c` | Home screen info ticker |
 | `main/settings.c` | Saved settings (NVS) |
 | `main/net_time.c`, `main/rtc.c` | Wi-Fi, NTP time and the RTC chip |
@@ -676,7 +698,7 @@ test/host/json_skip/run.sh
 | `dashpad/`, `tools/dashpad_helper.py` | DashPad example layout and helper config; the PC helper |
 | `main/usb_files.c`, `tools/sdcard.py` | SD card file transfer over USB |
 | `main/ext_apps.c`, `main/app_keys.c`, `main/app_symbols.c` | SD card apps: loading, signature checks / trusted keys / developer mode, and what apps may call |
-| `sdk/`, `apps/`, `keys/` | App SDK (header and build settings), example apps, the built-in public signing key |
+| `sdk/`, `apps/`, `keys/` | App SDK (headers and build settings), apps (games and the analog clock example), the built-in public signing key |
 | `tools/appkey.py`, `tools/build_app.sh` | Make signing keys; build and sign apps |
 | `tools/sdcard.py`, `tools/screenshot.py` | USB file transfer (and `shot`); screenshot receiver when there's no SD card |
 | `tools/gen_game_images.py`, `gen_stonks_icon.py`, `gen_elf_icon.py` | Generate the built-in images (the games' pictures and icons in `apps/`, `stonks_icon.c`, `elf_icon.c`) |
