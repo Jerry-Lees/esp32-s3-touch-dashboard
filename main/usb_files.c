@@ -47,7 +47,9 @@
 #include "mbedtls/base64.h"
 
 #include "dashpad.h"
+#include "app_framework.h"
 #include "ext_apps.h"
+#include "launcher.h"
 #include "screenshot.h"
 #include "sd_card.h"
 #include "usb_files.h"
@@ -430,13 +432,18 @@ static void cmd_mkdir(const char *arg)
 }
 
 /* Memory report: internal RAM / PSRAM now, at their lowest since start-up
- * and the largest free block, then each task's stack size and peak use. */
+ * and the largest free block, then each task's stack size and peak use.
+ * The first line names the open app. */
 static void cmd_mem(void)
 {
     static const struct { const char *name; uint32_t caps; } kinds[] = {
         { "internal", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT },
         { "psram", MALLOC_CAP_SPIRAM },
     };
+    /* Which app is open, to tie the numbers to it. Read without the LVGL lock:
+     * app names are never freed while the app is open, and it's only a hint. */
+    const app_t *app = launcher_current_app();
+    out("@@m app open      %s\n", app ? app->name : "(home screen)");
     for (int i = 0; i < 2; i++) {
         out("@@m %-8s free %7u  lowest %7u  largest block %7u  total %7u\n", kinds[i].name,
             (unsigned)heap_caps_get_free_size(kinds[i].caps),
