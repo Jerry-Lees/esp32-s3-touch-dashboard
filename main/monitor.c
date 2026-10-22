@@ -38,6 +38,8 @@ static const char *TAG = "monitor";
 #define FILE_TMP     FILE_PATH ".tmp"
 #define FILE_BAK     FILE_PATH ".bak"
 #define FILE_MAX     (64 * 1024)
+#define HIST_PATH    SD_DIR "/monitor_history.bin"
+#define HIST_SAVE_SEC (15 * 60)
 #define MON_WORKERS  3
 #define PING_MS      1500
 #define TCP_MS       2500
@@ -57,6 +59,16 @@ static bool         s_save_pending;        /* __atomic */
 static char         s_alert[ALERTS][96];
 static int          s_alert_r, s_alert_w;
 static bool         s_opt_tk = true, s_opt_pop = true, s_opt_sort = true;
+
+/* History per host (PSRAM, one entry per s_cfg->h[], under s_mx). */
+typedef struct {
+    char        name[MON_NAME];
+    char        addr[64];
+    uint32_t    last;                      /* clock slot + 1 of the newest write, 0 = none */
+    mon_hist_t  b[MON_HIST_N];             /* ring, indexed by slot number % MON_HIST_N */
+} hist_t;
+static hist_t      *s_hist;
+static int          s_nhist;
 
 void monitor_lock(void)   { xSemaphoreTake(s_mx, portMAX_DELAY); }
 void monitor_unlock(void) { xSemaphoreGive(s_mx); }
@@ -263,6 +275,9 @@ static bool load_list(bool force)
         if (s_size != -1 || force || s_cfg->nhosts) {
             monitor_lock();
             s_cfg->nhosts = s_cfg->ngroups = 0;
+            free(s_hist);
+            s_hist = NULL;
+            s_nhist = 0;
             monitor_unlock();
         }
         s_size = -1;
@@ -284,8 +299,24 @@ static bool load_list(bool force)
     if (f) fclose(f);
     char why[96] = "Couldn't read monitors.json.";
     if (ok) ok = parse_list(text, nw, why, sizeof(why));
+    hist_t *nh = ok && nw->nhosts ? heap_caps_calloc(nw->nhosts, sizeof(hist_t), MALLOC_CAP_SPIRAM) : NULL;
     if (ok) {
         monitor_lock();
+        /* History follows hosts with the same name and address. */
+        for (int i = 0; nh && i < nw->nhosts; i++) {
+            snprintf(nh[i].name, sizeof(nh[i].name), "%s", nw->h[i].name);
+            snprintf(nh[i].addr, sizeof(nh[i].addr), "%s", nw->h[i].addr);
+            for (int j = 0; j < s_nhist; j++) {
+                if (!strcmp(s_hist[j].name, nh[i].name) && !strcmp(s_hist[j].addr, nh[i].addr)) {
+                    memcpy(&nh[i], &s_hist[j], sizeof(hist_t));
+                    break;
+                }
+            }
+        }
+        free(s_hist);
+        s_hist = nh;
+        s_nhist = nh ? nw->nhosts : 0;
+        nh = NULL;
         carry_over(nw, s_cfg);
         memcpy(s_cfg, nw, sizeof(*nw));
         s_problem[0] = '\0';
@@ -297,6 +328,7 @@ static bool load_list(bool force)
         set_problem(why);           /* the old list (if any) keeps running */
         ESP_LOGW(TAG, "%s", why);
     }
+    free(nh);
     free(text);
     free(nw);
     return ok || s_cfg->nhosts > 0;
@@ -627,12 +659,155 @@ static void compare_round(bool first)
     }
 }
 
+/* ======================= history ======================= */
+
+/* Slots are numbered from the real clock (time / MON_HIST_SEC), so the
+ * history can be saved to the card and still line up after a restart.
+ * False while the clock isn't set. */
+static bool clock_slot(uint32_t *slot)
+{
+    if (!net_time_is_synced()) return false;
+    *slot = (uint32_t)(time(NULL) / MON_HIST_SEC);
+    return true;
+}
+
+/* After a round: each host's results go into the current slot. */
+static void record_round(void)
+{
+    uint32_t slot;
+    if (!clock_slot(&slot)) return;
+    monitor_lock();
+    for (int i = 0; i < s_cfg->nhosts && i < s_nhist; i++) {
+        hist_t *t = &s_hist[i];
+        const mon_host_t *h = &s_cfg->h[i];
+        /* Empty the slots skipped since the last write (or all of them). The
+         * same slot again (Check now) keeps adding to it. */
+        if (!t->last || t->last > slot + 1 || slot + 1 - t->last >= MON_HIST_N) {
+            memset(t->b, 0, sizeof(t->b));
+        } else {
+            for (uint32_t j = t->last; j <= slot; j++) memset(&t->b[j % MON_HIST_N], 0, sizeof(t->b[0]));
+        }
+        mon_hist_t *b = &t->b[slot % MON_HIST_N];
+        int ms = -1;
+        for (int k = 0; k < h->ncheck && k < 8; k++) {
+            const mon_check_t *c = &h->c[k];
+            if (c->state == MON_UNKNOWN) continue;
+            if (c->fails == 0) {
+                b->up |= 1 << k;
+                if (c->ms >= 0 && (ms < 0 || c->kind == MON_PING)) ms = c->ms;
+            } else {
+                b->down |= 1 << k;
+            }
+        }
+        if (ms >= 0) {
+            int v = ms < 65534 ? ms + 1 : 65535;        /* stored +1: 0 = no answer */
+            if (v > b->ms) b->ms = v;
+        }
+        t->last = slot + 1;
+    }
+    monitor_unlock();
+}
+
+void monitor_history(int host, mon_hist_t *out)
+{
+    memset(out, 0, MON_HIST_N * sizeof(*out));
+    if (host < 0 || host >= s_nhist) return;
+    const hist_t *t = &s_hist[host];
+    if (!t->last) return;
+    int64_t newest = (int64_t)t->last - 1, now = newest;
+    uint32_t cs;
+    if (clock_slot(&cs)) now = cs;
+    int carry = (s_cfg->interval + MON_HIST_SEC - 1) / MON_HIST_SEC + 1;   /* slots a round may skip */
+    int gap = carry + 1;
+    for (int k = 0; k < MON_HIST_N; k++) {
+        int64_t slot = now - (MON_HIST_N - 1) + k;
+        if (slot >= 0 && slot <= newest && slot > newest - MON_HIST_N) out[k] = t->b[slot % MON_HIST_N];
+        if (out[k].up || out[k].down) {
+            gap = 0;
+        } else if (k && ++gap <= carry) {
+            out[k] = out[k - 1];                    /* between two rounds: the last result */
+        }
+    }
+}
+
+/* ---- saved on the card: header + one hist_t per host ---- */
+
+typedef struct {
+    char        magic[8];                  /* "MONHIST1" */
+    uint32_t    count, rec_size, slots, slot_sec;
+} hist_file_t;
+
+static uint32_t s_hist_saved;              /* monitor_now() of the last save */
+
+/* At start-up, before the first list: the saved history becomes the "old"
+ * table that the new list picks its hosts from. */
+static void hist_load(void)
+{
+    FILE *f = sd_card_mounted() ? fopen(HIST_PATH, "rb") : NULL;
+    if (!f) return;
+    hist_file_t hd;
+    hist_t *t = NULL;
+    bool ok = fread(&hd, sizeof(hd), 1, f) == 1 && !memcmp(hd.magic, "MONHIST1", 8) &&
+              hd.rec_size == sizeof(hist_t) && hd.slots == MON_HIST_N &&
+              hd.slot_sec == MON_HIST_SEC && hd.count <= MON_HOSTS;
+    if (ok && hd.count) {
+        t = heap_caps_calloc(hd.count, sizeof(hist_t), MALLOC_CAP_SPIRAM);
+        ok = t && fread(t, sizeof(hist_t), hd.count, f) == hd.count;
+    }
+    fclose(f);
+    if (!ok || !t) {
+        free(t);
+        if (!ok) ESP_LOGW(TAG, "Ignoring an unreadable monitor_history.bin");
+        return;
+    }
+    for (uint32_t i = 0; i < hd.count; i++) {   /* the strings come from a file: end them */
+        t[i].name[sizeof(t[i].name) - 1] = '\0';
+        t[i].addr[sizeof(t[i].addr) - 1] = '\0';
+    }
+    monitor_lock();
+    free(s_hist);
+    s_hist = t;
+    s_nhist = hd.count;
+    monitor_unlock();
+    ESP_LOGI(TAG, "History of %u hosts loaded", (unsigned)hd.count);
+}
+
+/* Every HIST_SAVE_SEC: write a copy (via .tmp, so a power cut can't leave
+ * half a file). */
+static void hist_save(void)
+{
+    if (!sd_card_mounted() || monitor_now() - s_hist_saved < HIST_SAVE_SEC) return;
+    s_hist_saved = monitor_now();
+    monitor_lock();
+    int n = s_nhist;
+    hist_t *copy = n ? heap_caps_malloc(n * sizeof(hist_t), MALLOC_CAP_SPIRAM) : NULL;
+    if (copy) memcpy(copy, s_hist, n * sizeof(hist_t));
+    monitor_unlock();
+    if (!copy) return;
+    hist_file_t hd = { .magic = "MONHIST1", .count = n, .rec_size = sizeof(hist_t),
+                       .slots = MON_HIST_N, .slot_sec = MON_HIST_SEC };
+    FILE *f = fopen(HIST_PATH ".tmp", "wb");
+    bool ok = f && fwrite(&hd, sizeof(hd), 1, f) == 1 && fwrite(copy, sizeof(hist_t), n, f) == (size_t)n;
+    if (f && fclose(f) != 0) ok = false;
+    free(copy);
+    if (ok) {
+        unlink(HIST_PATH);
+        ok = rename(HIST_PATH ".tmp", HIST_PATH) == 0;
+    }
+    if (!ok) {
+        unlink(HIST_PATH ".tmp");
+        ESP_LOGW(TAG, "Couldn't save monitor_history.bin");
+    }
+}
+
 /* ======================= coordinator ======================= */
 
 static void coordinator(void *arg)
 {
     (void)arg;
     for (int i = 0; i < 60 && !sd_card_mounted(); i++) vTaskDelay(pdMS_TO_TICKS(500));
+    hist_load();
+    s_hist_saved = monitor_now();
     for (;;) {
         bool force = __atomic_exchange_n(&s_reload, false, __ATOMIC_ACQ_REL);
         s_new_list = false;
@@ -652,6 +827,8 @@ static void coordinator(void *arg)
             for (int k = 0; k < MON_WORKERS; k++) xSemaphoreTake(s_done, portMAX_DELAY);
             s_last_round = monitor_now();
             compare_round(first);
+            record_round();
+            hist_save();
             bump();
         }
         /* Sleep until the next round, waking early for monitor_kick(). The

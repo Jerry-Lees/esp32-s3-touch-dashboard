@@ -284,17 +284,30 @@ microphone).
 
 ### Servers
 
-Watches the machines on your network: ping, TCP ports and web pages, every minute.
+Watches the machines on your network: ping, TCP ports and web pages, every minute (or as often
+as you choose), with 24 hours of history per server.
 
 | | | |
 |---|---|---|
-| ![Servers](docs/screenshots/servers.png) | ![A server's checks](docs/screenshots/servers_detail.png) | ![Servers menu](docs/screenshots/servers_menu.png) |
+| ![Servers](docs/screenshots/servers.png) | ![A server's checks and status history](docs/screenshots/servers_detail.png) | ![Answer-time history](docs/screenshots/servers_history.png) |
+| ![Editing the list](docs/screenshots/servers_edit.png) | ![Editing a server](docs/screenshots/servers_form.png) | ![Servers menu](docs/screenshots/servers_menu.png) |
+
+*Screenshots use a demo list with demo history; the addresses are real machines with their first
+three numbers changed.*
 
 - One card per server: green when all its checks pass, amber when some fail, red when all fail,
   grey until it's been checked. Problems are listed first (switch it off in the menu).
 - Tabs for each group in the list. **Check** runs the checks at once; the pencil edits the list.
 - Tap a card for each check: what it tests, up or down, the answer time or why it failed, and
-  since when.
+  since when. Below them, two history charts (scroll down for the second):
+  - **Status:** one block per 5 minutes: green when all checks passed, amber when some failed,
+    red when none answered. The title line says how much of the time everything was up.
+  - **Answer time:** a blue bar per 5 minutes for the slowest answer in it (ping when there is
+    one), with a scale on the left and the average; a red mark where nothing answered.
+  - Both cover the last 24 hours, zoomed to 2, 6 or 12 hours while there's less history. The
+    history is kept in memory and saved to `dashboard/monitor_history.bin` on the card every
+    15 minutes, so a restart loses at most the last 15 minutes. It needs the clock to be set.
+    A server keeps its history while its name and address stay the same.
 - A check only counts as down after **two failures in a row**, so a single lost packet doesn't
   turn a card red. Ping tries twice (a sleeping Wi-Fi device can miss the first one).
 - Optional, in the menu: an item in the home screen's info ticker ("all 44 up" or which ones are

@@ -68,6 +68,24 @@ void monitor_unlock(void);
 /* The list and results (PSRAM). Only between lock and unlock. */
 const mon_cfg_t *monitor_cfg(void);
 
+/* History: the last 24 hours in 5-minute slots of the real clock, per host
+ * (PSRAM; saved to SD_DIR/monitor_history.bin every 15 minutes and loaded at
+ * start-up; kept across list changes for hosts with the same name and
+ * address). up/down have bit k set if check k passed/failed in that slot;
+ * both 0 = no data. ms = the slowest answer in the slot + 1 (ping preferred;
+ * 0 = no answer). Not recorded while the clock isn't set. */
+#define MON_HIST_N    288
+#define MON_HIST_SEC  300
+typedef struct {
+    uint8_t     up, down;
+    uint16_t    ms;
+} mon_hist_t;
+
+/* Copies host's history, oldest slot first, into out[MON_HIST_N]. Slots
+ * between two rounds (interval longer than a slot) repeat the last result.
+ * Under the lock. */
+void monitor_history(int host, mon_hist_t *out);
+
 /* Host state from its checks: UNKNOWN, UP (all up), DOWN (all down);
  * partial = some down. Under the lock. */
 mon_state_t monitor_host_state(const mon_host_t *h, bool *partial);

@@ -6,7 +6,10 @@
  *   amber partly up, red down, grey not checked yet), name, what it is,
  *   checks up / total and the answer time or the problem. Problems first
  *   unless switched off in the menu.
- * - Tap a card for every check: what it tests, state, time, since when.
+ * - Tap a card for every check: what it tests, state, time, since when,
+ *   and two history charts below them (status blocks and blue answer-time
+ *   bars, one per 5 minutes, last 24 h; zoomed to 2/6/12 h while there's
+ *   less data; monitor.c keeps the history and saves it to the card).
  * - Edit (top bar, or a server's page): add, change, reorder and delete
  *   servers, checks and groups; Save writes monitors.json on the card.
  */
@@ -338,8 +341,214 @@ static void detail_edit(lv_event_t *e)
     edit_open(host);
 }
 
+/* ---------- history graphs (on the detail page) ---------- */
+
+static mon_hist_t s_hist[MON_HIST_N] EXT_RAM_BSS_ATTR;   /* the open host's, oldest first */
+static int        s_hist_scale;                          /* ms at the top of the chart */
+static int        s_hist_from;                           /* first slot shown (zoom) */
+
+static uint32_t hist_color(const mon_hist_t *b)
+{
+    return !b->down ? C_UP : !b->up ? C_DOWN : C_PART;
+}
+
+/* Left edge of slot k in a box showing slots s_hist_from.. (MON_HIST_N =
+ * just past the right edge). */
+static lv_coord_t slot_x(const lv_area_t *a, int k)
+{
+    return a->x1 + (k - s_hist_from) * lv_area_get_width(a) / (MON_HIST_N - s_hist_from);
+}
+
+/* Status chart: one block per 5 minutes in the state's colour (green all
+ * checks passed, amber some failed, red none answered); no data = nothing.
+ * Neighbouring blocks of the same colour are drawn as one rectangle. */
+static void status_draw(lv_event_t *e)
+{
+    lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
+    lv_area_t a;
+    lv_obj_get_coords(lv_event_get_target(e), &a);
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    for (int k = s_hist_from; k < MON_HIST_N;) {
+        const mon_hist_t *b = &s_hist[k];
+        int j = k + 1;
+        if (!b->up && !b->down) {
+            k = j;
+            continue;
+        }
+        uint32_t c = hist_color(b);
+        while (j < MON_HIST_N && (s_hist[j].up || s_hist[j].down) && hist_color(&s_hist[j]) == c) j++;
+        lv_area_t r = { slot_x(&a, k), a.y1, slot_x(&a, j) - 1, a.y2 };
+        d.bg_color = lv_color_hex(c);
+        lv_draw_rect(ctx, &d, &r);
+        k = j;
+    }
+}
+
+/* Answer-time chart: a blue bar per 5 minutes, height = the slowest answer
+ * (0 at the bottom, s_hist_scale at the top); a red mark where nothing
+ * answered. */
+static void answer_draw(lv_event_t *e)
+{
+    lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
+    lv_area_t a;
+    lv_obj_get_coords(lv_event_get_target(e), &a);
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    int h = lv_area_get_height(&a);
+
+    d.bg_color = lv_color_hex(0x3A4652);                  /* top and half-way lines */
+    lv_area_t g = { a.x1, a.y1, a.x2, a.y1 };
+    lv_draw_rect(ctx, &d, &g);
+    g.y1 = g.y2 = a.y1 + h / 2;
+    lv_draw_rect(ctx, &d, &g);
+
+    for (int k = s_hist_from; k < MON_HIST_N; k++) {
+        const mon_hist_t *b = &s_hist[k];
+        lv_area_t r = { slot_x(&a, k), a.y1, LV_MAX(slot_x(&a, k + 1) - 2, slot_x(&a, k)), a.y2 };
+        if (b->ms && s_hist_scale) {
+            r.y1 = a.y2 - LV_MAX(2, LV_MIN(h, (b->ms - 1) * h / s_hist_scale)) + 1;
+            d.bg_color = lv_color_hex(C_ACCENT);
+        } else if (b->down && !b->up) {
+            r.y1 = a.y2 - 3;
+            d.bg_color = lv_color_hex(C_DOWN);
+        } else {
+            continue;
+        }
+        lv_draw_rect(ctx, &d, &r);
+    }
+}
+
+#define GUTTER  60                       /* left of the charts: the scale */
+
+static lv_obj_t *graph_box(lv_obj_t *p, int y, int h, lv_event_cb_t draw)
+{
+    lv_obj_t *o = lv_obj_create(p);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, AREA_W - 40 - GUTTER, h);
+    lv_obj_set_pos(o, GUTTER, y);
+    lv_obj_set_style_bg_color(o, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(o, draw, LV_EVENT_DRAW_MAIN, NULL);
+    return o;
+}
+
+/* "6 h ago ... 3 h ago ... now" under a chart. */
+static void time_axis(lv_obj_t *p, int y, int zoom)
+{
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%d h ago", zoom);
+    lv_obj_set_pos(label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, buf), GUTTER, y);
+    snprintf(buf, sizeof(buf), "%d h ago", zoom / 2);
+    lv_obj_t *l = label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, buf);
+    lv_obj_align(l, LV_ALIGN_TOP_MID, GUTTER / 2, y);
+    lv_obj_align(label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, "now"), LV_ALIGN_TOP_RIGHT, 0, y);
+}
+
+/* A colour square and its meaning; returns the x after it. */
+static int legend(lv_obj_t *p, int x, int y, uint32_t color, const char *text)
+{
+    lv_obj_t *sq = lv_obj_create(p);
+    lv_obj_remove_style_all(sq);
+    lv_obj_set_size(sq, 14, 14);
+    lv_obj_set_pos(sq, x, y + 2);
+    lv_obj_set_style_radius(sq, 3, 0);
+    lv_obj_set_style_bg_color(sq, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(sq, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(sq, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *l = label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, text);
+    lv_obj_set_pos(l, x + 20, y);
+    lv_obj_update_layout(l);
+    return x + 20 + lv_obj_get_width(l) + 24;
+}
+
+/* The two history charts from s_hist, from y in the detail body. */
+static void add_history(int y)
+{
+    /* Zoom: the shortest of 2, 6, 12 or 24 hours that holds all the data. */
+    static const int hours[] = { 2, 6, 12, 24 };
+    int first = MON_HIST_N, zoom = 24;
+    for (int k = 0; k < MON_HIST_N && first == MON_HIST_N; k++) {
+        if (s_hist[k].up || s_hist[k].down) first = k;
+    }
+    for (int i = 0; i < 4; i++) {
+        zoom = hours[i];
+        if (MON_HIST_N - first <= zoom * 3600 / MON_HIST_SEC) break;
+    }
+    s_hist_from = MON_HIST_N - zoom * 3600 / MON_HIST_SEC;
+
+    int n = 0, ok = 0, max = 0, sum = 0, cnt = 0;
+    for (int k = s_hist_from; k < MON_HIST_N; k++) {
+        const mon_hist_t *b = &s_hist[k];
+        if (!b->up && !b->down) continue;
+        n++;
+        ok += !b->down;
+        if (b->ms) {
+            max = LV_MAX(max, b->ms - 1);
+            sum += b->ms - 1;
+            cnt++;
+        }
+    }
+    static const int steps[] = { 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 65535 };
+    s_hist_scale = steps[0];
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        s_hist_scale = steps[i];
+        if (steps[i] >= max) break;
+    }
+
+    lv_obj_t *p = U.dbody, *l;
+    char buf[128];
+
+    /* ---- status ---- */
+    snprintf(buf, sizeof(buf), "Status, last %d hours", zoom);
+    lv_obj_set_pos(label(p, APP_FONT_MEDIUM, APP_COLOR_TEXT, buf), 0, y);
+    if (n) {
+        int pct = ok * 1000 / n;                         /* tenths of a percent */
+        snprintf(buf, sizeof(buf), "all checks up %d.%d%% of the time", pct / 10, pct % 10);
+    } else {
+        snprintf(buf, sizeof(buf), "fills in as checks run (one block per 5 minutes)");
+    }
+    l = label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, buf);
+    lv_obj_align(l, LV_ALIGN_TOP_RIGHT, 0, y + 4);
+    int x = legend(p, GUTTER, y + 28, C_UP, "all checks up");
+    x = legend(p, x, y + 28, C_PART, "some checks down");
+    legend(p, x, y + 28, C_DOWN, "no check answered");
+    graph_box(p, y + 50, 26, status_draw);
+    time_axis(p, y + 78, zoom);
+
+    /* ---- answer time ---- */
+    y += 112;
+    lv_obj_set_pos(label(p, APP_FONT_MEDIUM, APP_COLOR_TEXT, "Answer time"), 0, y);
+    if (cnt) snprintf(buf, sizeof(buf), "slowest answer in each 5 minutes   " LV_SYMBOL_BULLET
+                      "   average %d ms", sum / cnt);
+    else snprintf(buf, sizeof(buf), "slowest answer in each 5 minutes");
+    l = label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, buf);
+    lv_obj_align(l, LV_ALIGN_TOP_RIGHT, 0, y + 4);
+    graph_box(p, y + 30, 80, answer_draw);
+    /* Scale on the left: top, half-way, 0. */
+    static const int at[] = { 0, 40, 80 };
+    for (int i = 0; i < 3; i++) {
+        int v = s_hist_scale * (2 - i) / 2;
+        if (v >= 1000 && v % 1000 == 0) snprintf(buf, sizeof(buf), "%d s", v / 1000);
+        else snprintf(buf, sizeof(buf), "%d ms", v);
+        l = label(p, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, buf);
+        lv_obj_set_width(l, GUTTER - 8);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_pos(l, 0, y + 30 + at[i] - 8);
+    }
+    time_axis(p, y + 114, zoom);
+
+    lv_obj_t *pad = lv_obj_create(p);                  /* bottom margin when scrolled down */
+    lv_obj_remove_style_all(pad);
+    lv_obj_set_size(pad, 10, 12);
+    lv_obj_set_pos(pad, 0, y + 132);
+    lv_obj_clear_flag(pad, LV_OBJ_FLAG_CLICKABLE);
+}
+
 static void fill_detail(void)
 {
+    lv_coord_t sy = lv_obj_get_scroll_y(U.dbody);
     lv_obj_clean(U.dbody);
     monitor_lock();
     const mon_cfg_t *cfg = monitor_cfg();
@@ -359,10 +568,10 @@ static void fill_detail(void)
     }
     for (int i = 0; i < h->ncheck; i++) {
         const mon_check_t *k = &h->c[i];
-        int y = 66 + i * 62;
+        int y = 58 + i * 52;
         lv_obj_t *row = lv_obj_create(U.dbody);
         lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, AREA_W - 40, 54);
+        lv_obj_set_size(row, AREA_W - 40, 46);
         lv_obj_set_pos(row, 0, y);
         lv_obj_set_style_radius(row, 10, 0);
         lv_obj_set_style_bg_color(row, lv_color_hex(C_PANEL), 0);
@@ -378,13 +587,13 @@ static void fill_detail(void)
         lv_obj_align(dot, LV_ALIGN_LEFT_MID, 14, 0);
 
         l = label(row, APP_FONT_MEDIUM, APP_COLOR_TEXT, k->label);
-        lv_obj_set_pos(l, 42, 5);
+        lv_obj_set_pos(l, 42, 2);
         if (k->kind == MON_PING) snprintf(buf, sizeof(buf), "Ping (ICMP echo)");
         else if (k->kind == MON_TCP) snprintf(buf, sizeof(buf), "TCP port %u", k->port);
         else snprintf(buf, sizeof(buf), "%s", k->url);
         l = label(row, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, buf);
         one_line(l, 400);
-        lv_obj_set_pos(l, 42, 31);
+        lv_obj_set_pos(l, 42, 26);
 
         char since[40];
         fmt_since(since, sizeof(since), k->since);
@@ -405,11 +614,16 @@ static void fill_detail(void)
             col = 0xFFCA28;
         }
         l = label(row, APP_FONT_MEDIUM, col, buf);
-        lv_obj_align(l, LV_ALIGN_TOP_RIGHT, -14, 5);
+        lv_obj_align(l, LV_ALIGN_TOP_RIGHT, -14, 2);
         l = label(row, LV_FONT_DEFAULT, APP_COLOR_SUBTEXT, since);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_RIGHT, -14, -6);
+        lv_obj_align(l, LV_ALIGN_BOTTOM_RIGHT, -14, -3);
     }
+    int y = 58 + h->ncheck * 52 + 4;
+    monitor_history(U.detail_host, s_hist);
     monitor_unlock();
+    add_history(y);
+    lv_obj_update_layout(U.dbody);
+    lv_obj_scroll_to_y(U.dbody, sy, LV_ANIM_OFF);
 }
 
 static void open_detail(int host)
@@ -428,9 +642,18 @@ static void open_detail(int host)
                  LV_ALIGN_TOP_RIGHT, -142, 8);
     U.dbody = lv_obj_create(U.detail);
     lv_obj_remove_style_all(U.dbody);
-    lv_obj_set_size(U.dbody, AREA_W - 40, AREA_H - 66);
+    lv_obj_set_size(U.dbody, AREA_W - 28, AREA_H - 66);
+    lv_obj_set_style_pad_right(U.dbody, 12, 0);              /* the scrollbar's lane */
     lv_obj_set_pos(U.dbody, 20, 60);
-    lv_obj_clear_flag(U.dbody, LV_OBJ_FLAG_CLICKABLE);
+    /* Clickable, or swipes over its (non-clickable) contents reach the page
+     * behind, which doesn't scroll. */
+    lv_obj_add_flag(U.dbody, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scroll_dir(U.dbody, LV_DIR_VER);           /* 4 checks push the chart down */
+    lv_obj_set_style_bg_color(U.dbody, lv_color_hex(0x5F6B77), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(U.dbody, LV_OPA_COVER, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(U.dbody, 5, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(U.dbody, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_scrollbar_mode(U.dbody, LV_SCROLLBAR_MODE_AUTO);
     fill_detail();
 }
 
